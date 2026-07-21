@@ -29,6 +29,9 @@
             integrity="sha384-D1Kt99CQMDuVetoL1lrYwg5t+9QdHe7NLX/SoJYkXDFfX37iInKRy5xLSi8nO7UC"
             crossorigin="anonymous"></script>
 
+    <!-- Flatpickr CSS -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+
     {% block extra_css %}{% endblock %}
 
 </head>
@@ -71,6 +74,20 @@
    
     
    
+
+    <!-- Flatpickr JS -->
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+    <script>
+        function initDatepickers() {
+            flatpickr(".datepicker-input", {
+                dateFormat: "Y-m-d",
+                allowInput: true,
+                monthSelectorType: "static"
+            });
+        }
+        document.addEventListener("DOMContentLoaded", initDatepickers);
+        document.body.addEventListener("htmx:afterSwap", initDatepickers);
+    </script>
 
     {% block extra_js %}{% endblock %}
 

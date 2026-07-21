@@ -17,6 +17,7 @@ class GroupWalletTransferRequestSerializer(serializers.ModelSerializer):
             'id', 'group', 'group_detail', 'requested_by', 'requested_by_detail',
             'recipient_profile', 'recipient_profile_detail', 'amount', 'status',
             'approvals_count', 'current_user_has_approved', 'can_execute',
+            'deceased_contribution', 'fund_campaign',
             'created_at', 'updated_at', 'executed_at'
         ]
         read_only_fields = ['status', 'approvals_count', 'current_user_has_approved', 'created_at', 'updated_at', 'executed_at']

@@ -15,6 +15,7 @@
 		"powershell.cwd": "komunityWeb",
 		"cSpell.words": [
 			"Organisation"
-		]
+		],
+		"liveServer.settings.multiRootWorkspaceName": "KomunityMobile"
 	}
 }

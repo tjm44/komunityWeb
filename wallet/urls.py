@@ -1,5 +1,5 @@
 from django.urls import path
-from . import views
+from . import views, webhooks
 
 urlpatterns = [
     path('top-up/', views.top_up_with_voucher, name='wallet_top_up'),
@@ -8,4 +8,5 @@ urlpatterns = [
     path('balance/', views.get_wallet_balance_snippet, name='wallet_balance'),
     path('history/', views.transaction_history, name='wallet_history'),
     path('history/group/<int:group_id>/', views.group_transaction_history, name='group_wallet_history'),
+    path('webhook/', webhooks.flutterwave_webhook, name='flutterwave_webhook'),
 ]

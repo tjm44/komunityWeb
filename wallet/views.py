@@ -81,14 +81,19 @@ def top_up_with_voucher(request):
 
 
     if api_response['success']:
-        # 3. Update Log
-        log_entry.status = Transaction.TransactionStatus.COMPLETED
-        log_entry.amount = api_response['amount']
-        log_entry.waas_reference_id = api_response['waas_ref']
-        log_entry.save()
+        # 3. Update Log & Balance atomically
+        with db_transaction.atomic():
+            log_entry.status = Transaction.TransactionStatus.COMPLETED
+            log_entry.amount = api_response['amount']
+            log_entry.waas_reference_id = api_response['waas_ref']
+            log_entry.save()
+            
+            # Increment balance
+            user_wallet = Wallet.objects.select_for_update().get(id=user_wallet.id)
+            user_wallet.balance += log_entry.amount
+            user_wallet.save(update_fields=['balance'])
         
         # 4. Return success signal to HTMX
-        # The 'HX-Trigger' header tells the frontend to update the balance component
         import json
         triggers = {'update-balance': True, 'close-top-up-modal': True, 'update-history': True}
         return HttpResponse("", status=200, headers={'HX-Trigger': json.dumps(triggers)})
@@ -115,49 +120,61 @@ def transfer_to_group(request, group_id):
     if not deceased_id:
         return HttpResponse(f"<span class='text-red-500 text-sm'>Please select a campaign</span>")
     
-    # Derive group from the deceased campaign to allow cross-group transfers
-    # (e.g. from Home page sidebar)
     deceased = get_object_or_404(Deceased, pk=deceased_id, cont_is_active=True)
     group = deceased.group
     
-    # Check if user already contributed to this campaign
     if Contribution.objects.filter(deceased_member=deceased, contributing_member=request.user.profile).exists():
         return HttpResponse(f"<span class='text-red-500 text-sm'>You have already contributed to this campaign.</span>")
 
-    user_wallet = request.user.wallet
+    with db_transaction.atomic():
+        user_wallet = Wallet.objects.select_for_update().get(user=request.user)
+
+        if user_wallet.get_balance() < amount:
+            return HttpResponse(f"<span class='text-red-500 text-sm'>Insufficient wallet balance.</span>")
+
+        # Deduct balance immediately inside lock
+        user_wallet.balance -= amount
+        user_wallet.save(update_fields=['balance'])
+
+        log_entry = Transaction.objects.create(
+            wallet=user_wallet,
+            transaction_type=Transaction.TransactionType.TRANSFER,
+            amount=amount,
+            status=Transaction.TransactionStatus.PENDING,
+            destination_group=group,
+            deceased_contribution=deceased
+        )
     
-    # 1. Log PENDING
-    log_entry = Transaction.objects.create(
-        wallet=user_wallet,
-        transaction_type=Transaction.TransactionType.TRANSFER,
-        amount=amount,
-        status=Transaction.TransactionStatus.PENDING,
-        destination_group=group,
-        deceased_contribution=deceased  # Link to deceased campaign
-    )
-    
-    # 2. Call API
+    # Call API outside long lock if needed, or handle mock transfer
     api_response = waas_api_transfer_funds(
         from_wallet_id=user_wallet.external_wallet_id,
         to_wallet_id=group.external_wallet_id,
         amount=amount
     )
     
-    if api_response['success']:
-        # 3. Update Log
-        log_entry.status = Transaction.TransactionStatus.COMPLETED
-        log_entry.waas_reference_id = api_response['waas_ref']
-        log_entry.save()
-        
-        # 4. Create Contribution record so it reflects in home totals and activity
-        Contribution.objects.create(
-            group=group,
-            deceased_member=deceased,
-            contributing_member=request.user.profile,
-            amount=amount,
-            payment_method='WALLET',
-            transaction=log_entry
-        )
+    with db_transaction.atomic():
+        log_entry = Transaction.objects.select_for_update().get(id=log_entry.id)
+        if api_response['success']:
+            log_entry.status = Transaction.TransactionStatus.COMPLETED
+            log_entry.waas_reference_id = api_response['waas_ref']
+            log_entry.save()
+            
+            Contribution.objects.create(
+                group=group,
+                deceased_member=deceased,
+                contributing_member=request.user.profile,
+                amount=amount,
+                payment_method='WALLET',
+                transaction=log_entry
+            )
+        else:
+            log_entry.status = Transaction.TransactionStatus.FAILED
+            log_entry.save()
+            # Refund wallet on failed transfer
+            user_wallet = Wallet.objects.select_for_update().get(user=request.user)
+            user_wallet.balance += amount
+            user_wallet.save(update_fields=['balance'])
+            return HttpResponse(f"<span class='text-red-500 text-sm'>{api_response['error']}</span>")
         
         # 5. Return success
         import json
@@ -168,10 +185,6 @@ def transfer_to_group(request, group_id):
             'update-history': True
         }
         return HttpResponse("", status=200, headers={'HX-Trigger': json.dumps(triggers)})
-    else:
-        log_entry.status = Transaction.TransactionStatus.FAILED
-        log_entry.save()
-        return HttpResponse(f"<span class='text-red-500 text-sm'>Transfer failed.</span>")
 
 
 @login_required
@@ -206,31 +219,31 @@ def send_p2p_money(request):
     sender_wallet, _ = Wallet.objects.get_or_create(user=request.user, defaults={'external_wallet_id': f"auto_{request.user.email}"})
     recipient_wallet, _ = Wallet.objects.get_or_create(user=recipient_user, defaults={'external_wallet_id': f"auto_{recipient_user.email}"})
 
-    if sender_wallet.get_balance() < amount:
-        return HttpResponse("<span class='text-red-500 text-sm'>Insufficient balance</span>")
-
-    # 1. Call API Stub
-    api_response = waas_api_transfer_funds(
-        from_wallet_id=sender_wallet.external_wallet_id,
-        to_wallet_id=recipient_wallet.external_wallet_id,
-        amount=amount
-    )
-
-    if not api_response['success']:
-        return HttpResponse(f"<span class='text-red-500 text-sm'>Transfer failed: {api_response.get('error', 'Unknown error')}</span>")
-
-    # Use database transaction
-    from django.db import transaction as db_transaction
-    
     with db_transaction.atomic():
-        # Debit from sender
+        # Lock sender and recipient wallets in predictable ID order to prevent deadlocks
+        wallet_ids = sorted([sender_wallet.id, recipient_wallet.id])
+        wallets = {w.id: w for w in Wallet.objects.select_for_update().filter(id__in=wallet_ids)}
+        
+        s_wallet = wallets[sender_wallet.id]
+        r_wallet = wallets[recipient_wallet.id]
+
+        if s_wallet.balance < amount:
+            return HttpResponse("<span class='text-red-500 text-sm'>Insufficient balance</span>")
+
+        # Update balances
+        s_wallet.balance -= amount
+        r_wallet.balance += amount
+        s_wallet.save(update_fields=['balance'])
+        r_wallet.save(update_fields=['balance'])
+
+        # Debit transaction record for sender
         sender_txn = Transaction.objects.create(
-            wallet=sender_wallet,
+            wallet=s_wallet,
             transaction_type=Transaction.TransactionType.P2P_SENT,
             amount=amount,
             status=Transaction.TransactionStatus.COMPLETED,
-            sender_wallet=sender_wallet,
-            recipient_wallet=recipient_wallet,
+            sender_wallet=s_wallet,
+            recipient_wallet=r_wallet,
             waas_reference_id=api_response['waas_ref']
         )
 

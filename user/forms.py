@@ -43,8 +43,9 @@ class ProfileForm(forms.ModelForm):
                 'style': 'width: 90%;'
             }),
             'date_of_birth': forms.DateInput(attrs={
-                'class': 'form-control border border-gray-600 text-gray-500 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500',
-                'type': 'date',
+                'class': 'form-control border border-gray-600 text-gray-500 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 datepicker-input',
+                'type': 'text',
+                'placeholder': 'YYYY-MM-DD',
                 'style': 'width: 90%;'
             }),
             'bio': forms.Textarea(attrs={

@@ -40,6 +40,9 @@
         }
     </style>
 
+    <!-- Flatpickr CSS -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+
     {% block extra_css %}{% endblock %}
 </head>
 
@@ -67,6 +70,20 @@
     <!-- Deceased Modal -->
     {% include 'condolence/partials/deceased_modal.html' %}
    
+    <!-- Flatpickr JS -->
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+    <script>
+        function initDatepickers() {
+            flatpickr(".datepicker-input", {
+                dateFormat: "Y-m-d",
+                allowInput: true,
+                monthSelectorType: "static"
+            });
+        }
+        document.addEventListener("DOMContentLoaded", initDatepickers);
+        document.body.addEventListener("htmx:afterSwap", initDatepickers);
+    </script>
+
     {% block extra_js %}{% endblock %}
 </body>
 </html>

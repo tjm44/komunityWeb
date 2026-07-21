@@ -1,3 +1,4 @@
+import uuid
 from rest_framework import viewsets, permissions, status
 from rest_framework.response import Response
 from rest_framework.decorators import action, api_view, permission_classes
@@ -144,8 +145,15 @@ def waas_api_withdraw(wallet_id, channel, metadata, amount, currency='ZAR'):
     elif channel == 'voucher':
         # Flutterwave v4 does not support custom voucher payout generation in standard payout sandbox directly, 
         # so we fallback to a simulated success reference.
-        if not metadata.get('voucher_code') or not metadata.get('partner'):
-            return {'success': False, 'error': 'Voucher code and partner are required.'}
+        partner = metadata.get('partner')
+        if not partner:
+            return {'success': False, 'error': 'Retail partner is required.'}
+        
+        import random
+        # Generate a simulated voucher code
+        voucher_code = f"VAL-{random.randint(100000, 999999)}"
+        metadata['voucher_code'] = voucher_code
+        
         return {
             'success': True,
             'waas_ref': f"WD_VOUCHER_{timezone.now().timestamp()}"
@@ -238,14 +246,17 @@ class GroupViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         group = serializer.save(creator=self.request.user)
-        # Automatically add the creator as an active admin member
+        # Automatically add the creator as active admin member
         GroupMembership.objects.create(
             group=group,
             member=self.request.user.profile,
             is_admin=True,
             role='admin',
-            status='active'
+            status='active',
+            is_active=True
         )
+        # Deactivate others for this user to keep only one active
+        GroupMembership.objects.filter(member=self.request.user.profile).exclude(group=group).update(is_active=False)
 
     def get_queryset(self):
         queryset = Group.objects.filter(is_active=True).order_by('-created_at')
@@ -262,10 +273,18 @@ class GroupViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'])
     def mine(self, request):
         profile = request.user.profile
-        groups = Group.objects.filter(groupmembership__member=profile, groupmembership__status='active')
         
         if request.GET.get('active') == 'true':
-            groups = groups.filter(groupmembership__is_active=True)
+            groups = Group.objects.filter(
+                groupmembership__member=profile,
+                groupmembership__status='active',
+                groupmembership__is_active=True
+            )
+        else:
+            groups = Group.objects.filter(
+                groupmembership__member=profile,
+                groupmembership__status='active'
+            )
             
         serializer = self.get_serializer(groups, many=True)
         return Response(serializer.data)
@@ -320,21 +339,27 @@ class GroupViewSet(viewsets.ModelViewSet):
                 membership.status = 'active'
                 membership.is_active = True
                 membership.save()
+            # Deactivate others for this user to keep only one active
+            GroupMembership.objects.filter(member=profile).exclude(group=group).update(is_active=False)
             return Response({'status': membership.status}, status=status.HTTP_201_CREATED)
 
         status_val = 'pending' if group.requires_approval else 'active'
+        is_active_val = (status_val == 'active')
         membership, created = GroupMembership.objects.get_or_create(
             group=group,
             member=profile,
             defaults={
                 'status': status_val,
-                'is_active': (status_val == 'active')
+                'is_active': is_active_val
             }
         )
         if not created:
             membership.status = status_val
-            membership.is_active = (status_val == 'active')
+            membership.is_active = is_active_val
             membership.save()
+        if is_active_val:
+            # Deactivate others for this user to keep only one active
+            GroupMembership.objects.filter(member=profile).exclude(group=group).update(is_active=False)
         return Response({'status': membership.status}, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['post'])
@@ -416,6 +441,8 @@ class GroupViewSet(viewsets.ModelViewSet):
 
         recipient_profile_id = request.data.get('recipient_profile')
         amount = request.data.get('amount')
+        deceased_contribution_id = request.data.get('deceased_contribution')
+        fund_campaign_id = request.data.get('fund_campaign')
 
         if not recipient_profile_id or amount is None:
             return Response({'error': 'recipient_profile and amount are required.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -438,11 +465,28 @@ class GroupViewSet(viewsets.ModelViewSet):
         if group.get_balance() < amount_val:
             return Response({'error': 'Insufficient group wallet balance for this transfer request.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        from condolence.models import Deceased, FundCampaign
+        deceased_contribution = None
+        if deceased_contribution_id:
+            try:
+                deceased_contribution = Deceased.objects.get(id=deceased_contribution_id, group=group)
+            except Deceased.DoesNotExist:
+                return Response({'error': 'Deceased record not found for this group.'}, status=status.HTTP_404_NOT_FOUND)
+
+        fund_campaign = None
+        if fund_campaign_id:
+            try:
+                fund_campaign = FundCampaign.objects.get(id=fund_campaign_id, group=group)
+            except FundCampaign.DoesNotExist:
+                return Response({'error': 'Fund campaign not found for this group.'}, status=status.HTTP_404_NOT_FOUND)
+
         transfer_request = GroupWalletTransferRequest.objects.create(
             group=group,
             requested_by=request.user,
             recipient_profile=recipient_profile,
             amount=amount_val,
+            deceased_contribution=deceased_contribution,
+            fund_campaign=fund_campaign,
         )
 
         serializer = GroupWalletTransferRequestSerializer(transfer_request, context={'request': request})

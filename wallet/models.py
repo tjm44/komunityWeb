@@ -6,12 +6,13 @@ from chema.models import Group
 class Wallet(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     external_wallet_id = models.CharField(max_length=100, unique=True)
+    balance = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
         return f"Wallet for {self.user.email}"
 
-    def get_balance(self):
+    def recalculate_balance(self):
         from decimal import Decimal
         from django.db.models import Sum
         
@@ -27,7 +28,14 @@ class Wallet(models.Model):
             status='COMPLETED'
         ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
 
-        return incoming - outgoing
+        calculated = incoming - outgoing
+        if self.balance != calculated:
+            self.balance = calculated
+            self.save(update_fields=['balance'])
+        return calculated
+
+    def get_balance(self):
+        return self.balance
 
 class Transaction(models.Model):
     class TransactionType(models.TextChoices):
@@ -75,6 +83,7 @@ class Transaction(models.Model):
     # IDs from the external systems for reconciliation
     voucher_reference = models.CharField(max_length=100, blank=True, null=True)
     waas_reference_id = models.CharField(max_length=100, blank=True, null=True)  # The ID from your WaaS provider
+    idempotency_key = models.CharField(max_length=100, unique=True, null=True, blank=True)
     
     timestamp = models.DateTimeField(auto_now_add=True)
 
@@ -117,6 +126,15 @@ class GroupWalletTransferRequest(models.Model):
     )
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    deceased_contribution = models.ForeignKey(
+        'condolence.Deceased', on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='wallet_transfer_requests'
+    )
+    fund_campaign = models.ForeignKey(
+        'condolence.FundCampaign', on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='campaign_transfer_requests',
+        help_text="Links this transfer request to a generic FundCampaign"
+    )
     approvals = models.ManyToManyField(
         settings.AUTH_USER_MODEL,
         related_name='approved_group_transfer_requests',
@@ -165,6 +183,8 @@ class GroupWalletTransferRequest(models.Model):
                 amount=self.amount,
                 status='COMPLETED',
                 destination_group=self.group,
+                deceased_contribution=self.deceased_contribution,
+                fund_campaign=self.fund_campaign,
                 waas_reference_id=f"GROUP_TRANSFER_{timezone.now().timestamp()}"
             )
 

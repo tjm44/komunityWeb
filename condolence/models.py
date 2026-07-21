@@ -135,7 +135,8 @@ class FundCampaign(models.Model):
         ordering = ['-created_at']
 
     def __str__(self):
-        return f"{self.get_campaign_type_display()} – {self.title} ({self.group.name})"
+        group_name = self.group.name if self.group else "No Group"
+        return f"{self.get_campaign_type_display()} – {self.title} ({group_name})"
 
     def get_total_raised(self):
         from django.db.models import Sum

@@ -144,9 +144,10 @@ class DependentForm(forms.ModelForm):
         fields = ['name', 'date_of_birth', 'relationship'] 
         widgets={
              'date_of_birth': forms.DateInput(attrs={
-                'class': 'form-control form-control-md',
+                'class': 'form-control form-control-md datepicker-input',
                  'style': ' width: 160px;',
-                 'type': 'date',
+                 'type': 'text',
+                 'placeholder': 'YYYY-MM-DD',
               }),
         }
        
