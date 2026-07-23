@@ -55,7 +55,7 @@ def top_up_with_voucher(request):
     HTMX view: Redeems a voucher and updates the user's wallet.
     """
     voucher_pin = request.POST.get('voucher_pin')
-    user_wallet, created = Wallet.objects.get_or_create(user=request.user, defaults={'external_wallet_id': f"auto_{request.user.email}"})
+    user_wallet, created = Wallet.objects.get_or_create(user=request.user, defaults={'external_wallet_id': f"auto_{request.user.phone or request.user.id}"})
 
     # 1. Log PENDING
     log_entry = Transaction.objects.create(
@@ -68,13 +68,14 @@ def top_up_with_voucher(request):
 
     # Generate a unique reference
     tx_ref = f"topup-{log_entry.id}-{uuid.uuid4().hex[:6]}"
-    phone = getattr(request.user.profile, 'phone', '0000000000') or '0000000000'
+    phone = getattr(getattr(request.user, 'profile', None), 'phone', '0000000000') or request.user.phone or '0000000000'
+    email = getattr(getattr(request.user, 'profile', None), 'email', 'user@example.com') or 'user@example.com'
 
     # 2. Call API
     api_response = waas_api_redeem_voucher(
         voucher_pin=voucher_pin,
         user_wallet_id=user_wallet.external_wallet_id,
-        email=request.user.email,
+        email=email,
         phone_number=phone,
         tx_ref=tx_ref
     )
@@ -206,18 +207,20 @@ def send_p2p_money(request):
         return HttpResponse("<span class='text-red-500 text-sm'>Amount must be positive</span>")
 
     if not recipient_email:
-        return HttpResponse("<span class='text-red-500 text-sm'>Recipient email is required</span>")
+        return HttpResponse("<span class='text-red-500 text-sm'>Recipient is required</span>")
 
-    if recipient_email == request.user.email:
+    user_email = getattr(getattr(request.user, 'profile', None), 'email', None)
+    if recipient_email in (user_email, request.user.phone):
         return HttpResponse("<span class='text-red-500 text-sm'>Cannot send money to yourself</span>")
 
-    try:
-        recipient_user = CustomUser.objects.get(email=recipient_email)
-    except CustomUser.DoesNotExist:
+    recipient_user = CustomUser.objects.filter(
+        models.Q(profile__email=recipient_email) | models.Q(phone=recipient_email)
+    ).first()
+    if not recipient_user:
         return HttpResponse("<span class='text-red-500 text-sm'>Recipient not found</span>")
 
-    sender_wallet, _ = Wallet.objects.get_or_create(user=request.user, defaults={'external_wallet_id': f"auto_{request.user.email}"})
-    recipient_wallet, _ = Wallet.objects.get_or_create(user=recipient_user, defaults={'external_wallet_id': f"auto_{recipient_user.email}"})
+    sender_wallet, _ = Wallet.objects.get_or_create(user=request.user, defaults={'external_wallet_id': f"auto_{request.user.phone or request.user.id}"})
+    recipient_wallet, _ = Wallet.objects.get_or_create(user=recipient_user, defaults={'external_wallet_id': f"auto_{recipient_user.phone or recipient_user.id}"})
 
     with db_transaction.atomic():
         # Lock sender and recipient wallets in predictable ID order to prevent deadlocks
@@ -273,7 +276,7 @@ def get_wallet_balance_snippet(request):
     HTMX view: Returns just the HTML for the wallet balance.
     """
     # Ensure wallet exists
-    user_wallet, created = Wallet.objects.get_or_create(user=request.user, defaults={'external_wallet_id': f"auto_{request.user.email}"})
+    user_wallet, created = Wallet.objects.get_or_create(user=request.user, defaults={'external_wallet_id': f"auto_{request.user.phone or request.user.id}"})
     
     balance = user_wallet.get_balance()
     
@@ -284,7 +287,7 @@ def transaction_history(request):
     """
     View to display the user's transaction history.
     """
-    user_wallet, created = Wallet.objects.get_or_create(user=request.user, defaults={'external_wallet_id': f"auto_{request.user.email}"})
+    user_wallet, created = Wallet.objects.get_or_create(user=request.user, defaults={'external_wallet_id': f"auto_{request.user.phone or request.user.id}"})
     transactions = Transaction.objects.filter(wallet=user_wallet).order_by('-timestamp')
     
     context = {

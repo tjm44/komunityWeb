@@ -29,7 +29,7 @@ class GroupWalletTransferRequestSerializer(serializers.ModelSerializer):
                 return {
                     'id': profile.id,
                     'full_name': profile.full_name,
-                    'email': obj.requested_by.email,
+                    'email': profile.email,
                 }
         return None
 
@@ -67,15 +67,15 @@ class TransactionSerializer(serializers.ModelSerializer):
         user = obj.wallet.user
         return {
             'user_id': user.id,
-            'user_email': user.email,
-            'full_name': user.profile.full_name if hasattr(user, 'profile') else user.email
+            'user_phone': user.phone,
+            'full_name': user.profile.full_name if hasattr(user, 'profile') else str(user)
         }
     
     def get_recipient_wallet_detail(self, obj):
         if obj.recipient_wallet:
             return {
                 'user_id': obj.recipient_wallet.user.id,
-                'full_name': obj.recipient_wallet.user.profile.full_name if hasattr(obj.recipient_wallet.user, 'profile') else obj.recipient_wallet.user.email
+                'full_name': obj.recipient_wallet.user.profile.full_name if hasattr(obj.recipient_wallet.user, 'profile') else str(obj.recipient_wallet.user)
             }
         return None
 

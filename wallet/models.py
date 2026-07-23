@@ -10,7 +10,7 @@ class Wallet(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"Wallet for {self.user.email}"
+        return f"Wallet for {self.user}"
 
     def recalculate_balance(self):
         from decimal import Decimal
@@ -88,7 +88,7 @@ class Transaction(models.Model):
     timestamp = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"{self.transaction_type} of {self.amount} for {self.wallet.user.email} - {self.status}"
+        return f"{self.transaction_type} of {self.amount} for {self.wallet.user} - {self.status}"
 
 
 class GroupWalletTransferRequest(models.Model):
@@ -187,6 +187,7 @@ class GroupWalletTransferRequest(models.Model):
                 fund_campaign=self.fund_campaign,
                 waas_reference_id=f"GROUP_TRANSFER_{timezone.now().timestamp()}"
             )
+            recipient_wallet.recalculate_balance()
 
             self.recipient_wallet = recipient_wallet
             self.executed_transaction = transaction

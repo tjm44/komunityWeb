@@ -7,7 +7,7 @@ from chema.models import Group
 @receiver(post_save, sender=settings.AUTH_USER_MODEL)
 def create_user_wallet(sender, instance, created, **kwargs):
     if created:
-        new_external_id = f"auto_{instance.email}" 
+        new_external_id = f"auto_{instance.phone or instance.id}" 
         Wallet.objects.get_or_create(user=instance, defaults={'external_wallet_id': new_external_id})
 
 @receiver(post_save, sender=Group)

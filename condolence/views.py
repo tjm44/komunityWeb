@@ -523,7 +523,7 @@ def disburse_funds(request, deceased_id):
     # Create Transaction for Beneficiary (PAYOUT_RECEIVED)
     beneficiary_wallet, _ = Wallet.objects.get_or_create(
         user=deceased_obj.beneficiary.user, 
-        defaults={'external_wallet_id': f"auto_{deceased_obj.beneficiary.user.email}"}
+        defaults={'external_wallet_id': f"auto_{deceased_obj.beneficiary.user.phone or deceased_obj.beneficiary.user.id}"}
     )
     
     Transaction.objects.create(
@@ -534,6 +534,7 @@ def disburse_funds(request, deceased_id):
         destination_group=active_group,
         deceased_contribution=deceased_obj
     )
+    beneficiary_wallet.recalculate_balance()
     
     deceased_obj.funds_disbursed = True 
     # deceased_obj.stop_contributions() 

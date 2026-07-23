@@ -135,10 +135,14 @@ def send_verification_email(request, user):
     verification_url = request.build_absolute_uri(
         reverse("verify_email", kwargs={"token": token})
     )
+    user_email = getattr(getattr(user, 'profile', None), 'email', None)
     # Log the verification URL to the console for debugging (dev only)
     logger = logging.getLogger(__name__)
-    logger.info("Email verification URL for %s: %s", user.email, verification_url)
+    logger.info("Email verification URL for %s: %s", user_email or user, verification_url)
     print("[VERIFICATION URL]", verification_url)
+
+    if not user_email:
+        return
 
     # Send email (use DEFAULT_FROM_EMAIL by default)
     try:
@@ -146,12 +150,12 @@ def send_verification_email(request, user):
             subject="Verify Your Email",
             message=f"Click the link below to verify your email:\n\n{verification_url}\n\nThis link expires in 24 hours.",
             from_email=getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@chema101.com'),
-            recipient_list=[user.email],
+            recipient_list=[user_email],
             fail_silently=False,
         )
     except Exception as e:
         # Log and notify in development; do not crash the signup flow
-        logger.exception("Failed to send verification email to %s: %s", user.email, e)
+        logger.exception("Failed to send verification email to %s: %s", user_email, e)
         messages.error(request, "Failed to send verification email. Please contact support.")
 
 
@@ -170,9 +174,10 @@ def verify_email(request, token):
     verification.delete()
     # Ensure allauth's EmailAddress is created/marked verified so allauth
     # doesn't treat the account as unverified on subsequent logins.
-    if EmailAddress is not None:
+    user_email = getattr(getattr(user, 'profile', None), 'email', None)
+    if EmailAddress is not None and user_email:
         try:
-            ea, created = EmailAddress.objects.get_or_create(user=user, email=user.email)
+            ea, created = EmailAddress.objects.get_or_create(user=user, email=user_email)
             ea.verified = True
             ea.primary = True
             ea.save()

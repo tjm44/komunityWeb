@@ -77,6 +77,216 @@ class EmailAuthTokenView(APIView):
         user = serializer.validated_data['user']
         token, created = Token.objects.get_or_create(user=user)
         return Response({'token': token.key})
+
+
+class CheckPhoneStatusView(APIView):
+    """
+    Endpoint: POST /api/v1/auth/check-phone/
+    Body: {"phone": "+254..."}
+    Returns {"has_pin": true/false, "user_exists": true/false}
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        from user.models import CustomUser
+        phone = request.data.get('phone', '').strip().replace(" ", "").replace("-", "")
+        if not phone:
+            return Response({'error': 'Phone number is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        user = CustomUser.objects.filter(phone=phone).first()
+        return Response({
+            'user_exists': bool(user),
+            'has_pin': bool(user and user.has_pin)
+        }, status=status.HTTP_200_OK)
+
+
+class RequestOTPView(APIView):
+    """
+    Endpoint: POST /api/v1/auth/request-otp/
+    Body: {"phone": "+254..."}
+    Generates a 6-digit OTP, saves it in PhoneOTP with a 10-minute expiry, and dispatches SMS.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        import random
+        from datetime import timedelta
+        from django.conf import settings
+        from user.models import PhoneOTP, CustomUser
+        from user.sms import send_otp_sms
+
+        phone = request.data.get('phone', '').strip().replace(" ", "").replace("-", "")
+        if not phone:
+            return Response({'error': 'Phone number is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Generate 6-digit OTP
+        otp = f"{random.randint(100000, 999999)}"
+        expires_at = timezone.now() + timedelta(minutes=10)
+
+        # Save to DB
+        PhoneOTP.objects.create(
+            phone=phone,
+            otp=otp,
+            expires_at=expires_at
+        )
+
+        # Dispatch SMS
+        send_otp_sms(phone, otp)
+
+        user = CustomUser.objects.filter(phone=phone).first()
+
+        return Response({
+            'message': 'OTP sent successfully.',
+            'phone': phone,
+            'has_pin': bool(user and user.has_pin),
+            'dev_otp': otp if getattr(settings, 'DEBUG', False) else None
+        }, status=status.HTTP_200_OK)
+
+
+class VerifyOTPView(APIView):
+    """
+    Endpoint: POST /api/v1/auth/verify-otp/
+    Body: {"phone": "+254...", "otp": "123456"}
+    Verifies OTP, authenticates or registers CustomUser, and returns Auth token + user info.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        from django.conf import settings
+        from user.models import PhoneOTP, CustomUser, Profile
+        from user.serializers import UserSerializer
+
+        phone = request.data.get('phone', '').strip().replace(" ", "").replace("-", "")
+        otp = request.data.get('otp', '').strip()
+
+        if not phone or not otp:
+            return Response({'error': 'Phone and OTP are required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Look up valid OTP
+        otp_record = PhoneOTP.objects.filter(phone=phone, is_verified=False).order_by('-created_at').first()
+
+        # Dev fallback: allow test OTP '123456' in DEBUG mode if needed
+        is_dev_test = getattr(settings, 'DEBUG', False) and otp == '123456'
+
+        if not is_dev_test:
+            if not otp_record:
+                return Response({'error': 'No OTP requested for this phone number.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            if not otp_record.is_valid():
+                return Response({'error': 'OTP has expired or already been used. Please request a new one.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            if otp_record.otp != otp:
+                otp_record.attempts += 1
+                otp_record.save(update_fields=['attempts'])
+                return Response({'error': 'Invalid OTP code. Please try again.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            otp_record.is_verified = True
+            otp_record.save(update_fields=['is_verified'])
+
+        # Get or Create User
+        user = CustomUser.objects.filter(phone=phone).first()
+        is_new_user = False
+        if not user:
+            profile = Profile.objects.filter(phone=phone).first()
+            if profile and profile.user:
+                user = profile.user
+                user.phone = phone
+                user.is_phone_verified = True
+                user.save()
+            else:
+                user = CustomUser.objects.create_user(phone=phone)
+                user.is_phone_verified = True
+                user.is_active = True
+                user.save()
+                is_new_user = True
+                if hasattr(user, 'profile'):
+                    user.profile.phone = phone
+                    user.profile.save()
+
+        if hasattr(user, 'profile') and not user.profile.phone:
+            user.profile.phone = phone
+            user.profile.save()
+
+        token, _ = Token.objects.get_or_create(user=user)
+        user_serializer = UserSerializer(user)
+
+        return Response({
+            'token': token.key,
+            'is_new_user': is_new_user,
+            'has_pin': bool(user.has_pin),
+            'user': user_serializer.data
+        }, status=status.HTTP_200_OK)
+
+
+class VerifyPINView(APIView):
+    """
+    Endpoint: POST /api/v1/auth/verify-pin/
+    Body: {"phone": "+254...", "pin": "1234"}
+    Verifies 4-digit security PIN and returns Auth token + user info.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        from user.models import CustomUser
+        from user.serializers import UserSerializer
+
+        phone = request.data.get('phone', '').strip().replace(" ", "").replace("-", "")
+        pin = request.data.get('pin', '').strip()
+
+        if not phone or not pin:
+            return Response({'error': 'Phone number and 4-digit PIN are required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        user = CustomUser.objects.filter(phone=phone).first()
+        if not user or not user.has_pin:
+            return Response({'error': 'No security PIN set for this account. Please verify via SMS OTP.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not user.check_pin(pin):
+            return Response({'error': 'Incorrect 4-digit PIN. Please try again.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        token, _ = Token.objects.get_or_create(user=user)
+        user_serializer = UserSerializer(user)
+
+        return Response({
+            'token': token.key,
+            'has_pin': True,
+            'user': user_serializer.data
+        }, status=status.HTTP_200_OK)
+
+
+class SetPINView(APIView):
+    """
+    Endpoint: POST /api/v1/auth/set-pin/
+    Body: {"phone": "+254...", "pin": "1234"}
+    Sets or updates the 4-digit security PIN for the user.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        from user.models import CustomUser
+
+        phone = request.data.get('phone', '').strip().replace(" ", "").replace("-", "")
+        pin = request.data.get('pin', '').strip()
+
+        if not pin or len(pin) != 4 or not pin.isdigit():
+            return Response({'error': 'PIN must be exactly 4 digits.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        user = None
+        if request.user and request.user.is_authenticated:
+            user = request.user
+        elif phone:
+            user = CustomUser.objects.filter(phone=phone).first()
+
+        if not user:
+            return Response({'error': 'User account not found.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        user.set_pin(pin)
+
+        return Response({
+            'message': '4-digit security PIN updated successfully.',
+            'has_pin': True
+        }, status=status.HTTP_200_OK)
+
+
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from decimal import Decimal
@@ -246,14 +456,16 @@ class GroupViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         group = serializer.save(creator=self.request.user)
-        # Automatically add the creator as active admin member
-        GroupMembership.objects.create(
+        # Ensure the creator active admin membership is upserted without duplicate creation
+        GroupMembership.objects.update_or_create(
             group=group,
             member=self.request.user.profile,
-            is_admin=True,
-            role='admin',
-            status='active',
-            is_active=True
+            defaults={
+                'is_admin': True,
+                'role': 'admin',
+                'status': 'active',
+                'is_active': True
+            }
         )
         # Deactivate others for this user to keep only one active
         GroupMembership.objects.filter(member=self.request.user.profile).exclude(group=group).update(is_active=False)
@@ -267,7 +479,7 @@ class GroupViewSet(viewsets.ModelViewSet):
             queryset = queryset.exclude(
                 groupmembership__member=self.request.user.profile,
                 groupmembership__status='active'
-            )
+            ).distinct()
         return queryset
 
     @action(detail=False, methods=['get'])
@@ -279,12 +491,12 @@ class GroupViewSet(viewsets.ModelViewSet):
                 groupmembership__member=profile,
                 groupmembership__status='active',
                 groupmembership__is_active=True
-            )
+            ).distinct()
         else:
             groups = Group.objects.filter(
                 groupmembership__member=profile,
                 groupmembership__status='active'
-            )
+            ).distinct()
             
         serializer = self.get_serializer(groups, many=True)
         return Response(serializer.data)
@@ -308,7 +520,7 @@ class GroupViewSet(viewsets.ModelViewSet):
         queryset = Group.objects.filter(is_active=True).exclude(
             groupmembership__member=request.user.profile,
             groupmembership__status='active'
-        ).order_by('-created_at')
+        ).distinct().order_by('-created_at')
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
 
@@ -866,6 +1078,7 @@ class DeceasedViewSet(viewsets.ModelViewSet):
                 deceased_contribution=deceased,
                 waas_reference_id=f"PAY_{timezone.now().timestamp()}"
             )
+            beneficiary_wallet.recalculate_balance()
             
             # We no longer close the fund automatically here
             # deceased.funds_disbursed = True
@@ -945,11 +1158,12 @@ class WalletViewSet(viewsets.ModelViewSet):
         # Get phone from user profile if available
         phone = getattr(getattr(request.user, 'profile', None), 'phone', None) or '0000000000'
 
+        user_email = getattr(getattr(request.user, 'profile', None), 'email', 'user@example.com') or 'user@example.com'
         # Call Flutterwave Sandbox
         flw_response = charge_voucher(
             voucher_pin=voucher_pin,
             amount=100.00,   # Sandbox: default 100 ZAR; amount comes back from the voucher
-            email=request.user.email,
+            email=user_email,
             phone_number=phone,
             tx_ref=tx_ref
         )
@@ -960,6 +1174,7 @@ class WalletViewSet(viewsets.ModelViewSet):
             transaction.amount = amount_val
             transaction.waas_reference_id = str(flw_response.get('waas_ref', tx_ref))
             transaction.save()
+            wallet.recalculate_balance()
             return Response({
                 'status': 'success',
                 'balance': str(wallet.get_balance()),
@@ -1012,6 +1227,7 @@ class WalletViewSet(viewsets.ModelViewSet):
             transaction.status = 'COMPLETED'
             transaction.waas_reference_id = api_response['waas_ref']
             transaction.save()
+            wallet.recalculate_balance()
 
             return Response({
                 'status': 'success',
@@ -1077,12 +1293,15 @@ class WalletViewSet(viewsets.ModelViewSet):
                 status='COMPLETED',
                 waas_reference_id=f"P2P_{timezone.now().timestamp()}"
             )
+            sender_wallet.recalculate_balance()
+            recipient_wallet.recalculate_balance()
 
+        recipient_info = getattr(getattr(recipient_user, 'profile', None), 'email', None) or recipient_user.phone or str(recipient_user.id)
         return Response({
             'status': 'success',
             'balance': sender_wallet.get_balance(),
             'transaction': TransactionSerializer(sender_txn).data,
-            'recipient': recipient_user.email
+            'recipient': recipient_info
         })
 
     @action(detail=False, methods=['post'])
@@ -1139,6 +1358,7 @@ class WalletViewSet(viewsets.ModelViewSet):
                 payment_method='wallet',
                 transaction=transaction
             )
+            wallet.recalculate_balance()
 
         # Send Notifications
         try:
@@ -1422,6 +1642,7 @@ class FundCampaignViewSet(viewsets.ModelViewSet):
                 transaction=tx,
                 note=note,
             )
+            wallet.recalculate_balance()
 
         # Notify campaign admin
         admin_user = campaign.created_by.user if campaign.created_by else (campaign.group.creator if campaign.group else campaign.organisation.creator)
@@ -1480,6 +1701,7 @@ class FundCampaignViewSet(viewsets.ModelViewSet):
                 fund_campaign=campaign,
                 waas_reference_id=f"PAY_CAMP_{timezone.now().timestamp()}"
             )
+            beneficiary_wallet.recalculate_balance()
             campaign.funds_disbursed = True
             campaign.save()
 

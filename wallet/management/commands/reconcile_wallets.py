@@ -18,7 +18,7 @@ class Command(BaseCommand):
                 discrepancies += 1
                 self.stdout.write(
                     self.style.WARNING(
-                        f"[FIXED] Wallet ID {wallet.id} ({wallet.user.email}): "
+                        f"[FIXED] Wallet ID {wallet.id} ({wallet.user}): "
                         f"Old={old_balance}, Recalculated={new_balance}"
                     )
                 )

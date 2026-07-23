@@ -14,44 +14,64 @@ from django.dispatch import receiver
 
 
 class CustomUserManager(BaseUserManager):
-    def create_user(self, email, password=None, **extra_fields):
-        if not email:
-            raise ValueError("The Email field must be set")
-        email = self.normalize_email(email)
-        user = self.model(email=email, **extra_fields)
-        user.set_password(password)
+    def create_user(self, phone=None, password=None, **extra_fields):
+        email = extra_fields.get("email")
+        if not phone and not email:
+            raise ValueError("Either Phone number or Email must be set")
+        user = self.model(phone=phone, **extra_fields)
+        if password:
+            user.set_password(password)
+        else:
+            user.set_unusable_password()
         user.save(using=self._db)
         return user
 
-    def create_superuser(self, email, password=None, **extra_fields):
+    def create_superuser(self, phone=None, password=None, **extra_fields):
         extra_fields.setdefault("is_staff", True)
         extra_fields.setdefault("is_superuser", True)
-        extra_fields.setdefault("is_active", True)  # Superusers should be active by default
+        extra_fields.setdefault("is_active", True)
 
         if extra_fields.get("is_staff") is not True:
             raise ValueError("Superuser must have is_staff=True.")
         if extra_fields.get("is_superuser") is not True:
             raise ValueError("Superuser must have is_superuser=True.")
 
-        return self.create_user(email, password, **extra_fields)
+        return self.create_user(phone=phone, password=password, **extra_fields)
 
 
 class CustomUser(AbstractBaseUser, PermissionsMixin):
-    email       = models.EmailField(unique=True)
+    phone       = models.CharField(max_length=20, unique=True, null=True, blank=True)
+    email       = models.EmailField(unique=True, null=True, blank=True)
+    pin         = models.CharField(max_length=128, null=True, blank=True)
     is_staff    = models.BooleanField(default=False)
-    is_active   = models.BooleanField(default=False)  # Activated after email verification
+    is_active   = models.BooleanField(default=True)
     date_joined = models.DateTimeField(default=timezone.now)
 
-    # Email verification field
-    is_email_verified = models.BooleanField(default=False)
+    # Phone verification field
+    is_phone_verified = models.BooleanField(default=False)
 
-    USERNAME_FIELD  = "email"
+    USERNAME_FIELD  = "phone"
     REQUIRED_FIELDS = []
 
     objects = CustomUserManager()
 
+    def set_pin(self, raw_pin):
+        from django.contrib.auth.hashers import make_password
+        self.pin = make_password(str(raw_pin))
+        self.save(update_fields=['pin'])
+
+    def check_pin(self, raw_pin):
+        if not self.pin:
+            return False
+        from django.contrib.auth.hashers import check_password
+        return check_password(str(raw_pin), self.pin)
+
+    @property
+    def has_pin(self):
+        return bool(self.pin)
+
     def __str__(self):
-        return self.email
+        return self.phone or str(self.id)
 
     class Meta:
         db_table = 'user_customuser'
@@ -64,6 +84,7 @@ class Profile(models.Model):
     user =          models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="profile")
     first_name    = models.CharField(max_length=255, blank=True)
     surname       = models.CharField(max_length=255, blank=True)
+    email         = models.EmailField(unique=True, null=True, blank=True)
     date_of_birth = models.DateField(null=True, blank=True)
     phone         = models.CharField(max_length=20, null=True, blank=True)
     profile_picture = models.ImageField(upload_to="profile_pictures/", blank=True)
@@ -79,6 +100,7 @@ class Profile(models.Model):
     is_deceased   = models.BooleanField(default=False)
     is_active     = models.BooleanField(default=True)
     is_verified   = models.BooleanField(default=False, help_text="Designates whether this user has a verified identity.")
+    is_email_verified = models.BooleanField(default=False)
 
     # Additional useful fields
     date_of_death  = models.DateField(null=True, blank=True)
@@ -92,7 +114,7 @@ class Profile(models.Model):
     def full_name(self):
         if self.first_name and self.surname:
             return f"{self.first_name} {self.surname}"
-        return self.first_name or self.surname or self.user.email
+        return self.first_name or self.surname or self.user.phone or str(self.user.id)
     
     def check_completion(self):
         """Check if profile has minimum required fields filled"""
@@ -118,7 +140,7 @@ class EmailVerificationToken(models.Model):
     expires_at = models.DateTimeField()
 
     def __str__(self):
-        return f"Email verification token for {self.user.email}"
+        return f"Email verification token for {self.user}"
 
     def is_valid(self):
         """Check if token is still valid (not expired)."""
@@ -149,9 +171,25 @@ class Notification(models.Model):
     notification_type = models.CharField(max_length=50, blank=True, null=True)
 
     def __str__(self):
-        return f"{self.title} -> {self.recipient.email}"
+        return f"{self.title} -> {self.recipient}"
 
     class Meta:
         ordering = ['-created_at']
 
-        
+
+class PhoneOTP(models.Model):
+    phone = models.CharField(max_length=20, db_index=True)
+    otp = models.CharField(max_length=6)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    is_verified = models.BooleanField(default=False)
+    attempts = models.IntegerField(default=0)
+
+    def is_valid(self):
+        return timezone.now() < self.expires_at and not self.is_verified
+
+    def __str__(self):
+        return f"OTP {self.otp} for {self.phone}"
+
+    class Meta:
+        ordering = ['-created_at']

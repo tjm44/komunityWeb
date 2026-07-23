@@ -7,6 +7,8 @@ from .views import (
     DeviceTokenViewSet, password_reset_request, search_api_view,
     EmailAuthTokenView, mobile_callback_view,
     FundCampaignViewSet, OrganisationViewSet,
+    RequestOTPView, VerifyOTPView, CheckPhoneStatusView,
+    VerifyPINView, SetPINView,
 )
 
 router = DefaultRouter()
@@ -30,8 +32,15 @@ urlpatterns = [
     path('', include(router.urls)),
     path('auth/', include('dj_rest_auth.urls')),
     path('auth/registration/', include('dj_rest_auth.registration.urls')),
+    path('auth/check-phone/', CheckPhoneStatusView.as_view(), name='check_phone'),
+    path('auth/request-otp/', RequestOTPView.as_view(), name='request_otp'),
+    path('auth/verify-otp/', VerifyOTPView.as_view(), name='verify_otp'),
+    path('auth/verify-pin/', VerifyPINView.as_view(), name='verify_pin'),
+    path('auth/set-pin/', SetPINView.as_view(), name='set_pin'),
     path('auth-token/', EmailAuthTokenView.as_view(), name='auth_token'),
     path('password-reset/', password_reset_request, name='api_password_reset'),
     path('search/', search_api_view, name='api_search'),
     path('auth/mobile-callback/', mobile_callback_view, name='mobile_callback'),
 ]
+
+
