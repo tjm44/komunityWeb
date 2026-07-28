@@ -81,6 +81,8 @@ class GroupSerializer(serializers.ModelSerializer):
 class OrganisationSerializer(serializers.ModelSerializer):
     balance = serializers.DecimalField(source='get_balance', max_digits=10, decimal_places=2, read_only=True)
     is_admin = serializers.SerializerMethodField()
+    admin2_detail = ProfileSerializer(source='admin2.profile', read_only=True)
+    admin3_detail = ProfileSerializer(source='admin3.profile', read_only=True)
 
     class Meta:
         model = Organisation
@@ -89,6 +91,8 @@ class OrganisationSerializer(serializers.ModelSerializer):
             'created_at', 'is_admin', 'balance',
             # Registry fields
             'is_verified', 'registration_number', 'entity_type',
+            'email', 'phone_number', 'admin2', 'admin3',
+            'admin2_detail', 'admin3_detail',
         ]
 
     def get_is_admin(self, obj):

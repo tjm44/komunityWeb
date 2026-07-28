@@ -68,8 +68,6 @@ INSTALLED_APPS = [
     'chema',
     'user.apps.UserConfig',
     'condolence',
-    'crispy_forms',
-    'crispy_tailwind',
     'wallet',
     'rest_framework',
     'rest_framework.authtoken',
@@ -83,8 +81,6 @@ INSTALLED_APPS = [
     'allauth.socialaccount.providers.facebook',
     'dj_rest_auth',
     'dj_rest_auth.registration',
-    
-    "widget_tweaks",
 ]
 
 AUTH_USER_MODEL = 'user.CustomUser'
@@ -107,18 +103,14 @@ TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
         'DIRS': [os.path.join(BASE_DIR,'templates'),
-                    os.path.join(BASE_DIR,'templates','account')],
+                     os.path.join(BASE_DIR,'templates','account')],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
-                'chema.context_processors.user_groups',
-              
                 'django.template.context_processors.debug',
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
-                'chema.context_processors.active_group_context',
-                
             ],
         },
     },
@@ -276,7 +268,22 @@ REST_FRAMEWORK = {
     ],
 }
 
-CORS_ALLOW_ALL_ORIGINS = True # In production, specify allowed origins
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://app.komunity.co.za",
+]
+# Allow all origins in local development so the Expo mobile client
+# (which runs on a LAN IP like 192.168.x.x) can reach the Django backend.
+# In production DJANGO_ENV=production, this will be False.
+if DEBUG:
+    CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_CREDENTIALS = True
+
+
+SESSION_COOKIE_SAMESITE = 'Lax'
+CSRF_COOKIE_HTTPONLY = False
+
 
 # Flutterwave Configuration
 FLW_CLIENT_ID = os.environ.get('FLW_CLIENT_ID')

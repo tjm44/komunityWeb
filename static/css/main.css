@@ -2,18 +2,22 @@ body {
     font-family: 'Shanti', sans-serif;
     margin: 0;
     padding: 0;
+    background-color: var(--bg-deep-blue);
+    color: var(--textcolor1);
 }
 
 :root {
-
-    --bg-deep-blue: #0c274bfb;
-    --textcolor: rgb(20, 213, 247);
-    --textcolor1: rgb(101, 171, 184);
-    --border-color: rgb(20, 24, 247);
-    --btncolor: 1 rgb(243, 7, 39);
-    --btncolor: rgb(15, 243, 7);
-    --btncolor: 3 rgb(188, 7, 243);
-    --btncolor: 4 rgb(243, 168, 7);
+    /* Option 3: Warm Charcoal & Amber Gold Dark Theme */
+    --bg-deep-blue: #1a1818;
+    --bg-surface: #242121;
+    --bg-card: #2d2929;
+    --textcolor: #f59e0b; /* Amber Gold accent */
+    --textcolor1: #e2e8f0; /* Crisp slate text */
+    --textcolor-muted: #94a3b8; /* Muted text */
+    --border-color: #3f3939; /* Warm dark border */
+    --btncolor: #d97706; /* Warm amber button */
+    --accent-gold: #f59e0b;
+    --accent-amber: #d97706;
 }
 
 /* Hide scrollbar while keeping scroll functionality */

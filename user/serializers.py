@@ -9,11 +9,11 @@ class ProfileSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'user', 'first_name', 'surname', 'full_name', 'email', 'is_email_verified',
             'date_of_birth', 'phone', 'profile_picture', 'cultural_background', 
-            'religious_affiliation', 'traditional_names', 'bio', 
+            'religious_affiliation', 'traditional_names', 'spiritual_beliefs', 'bio', 
             'is_complete', 'is_deceased', 'is_active', 'date_of_death',
             'active_role', 'is_verified'
         ]
-        read_only_fields = ['full_name', 'is_complete', 'active_role', 'is_verified']
+        read_only_fields = ['user', 'full_name', 'is_complete', 'active_role', 'is_verified']
 
     def get_active_role(self, obj):
         try:
@@ -24,13 +24,18 @@ class ProfileSerializer(serializers.ModelSerializer):
             return None
 
 class UserSerializer(serializers.ModelSerializer):
-    profile = ProfileSerializer(read_only=True)
+    profile = serializers.SerializerMethodField()
     active_role = serializers.SerializerMethodField()
 
     class Meta:
         model = CustomUser
         fields = ['id', 'phone', 'profile', 'date_joined', 'active_role']
         read_only_fields = ['date_joined']
+
+    def get_profile(self, obj):
+        if hasattr(obj, 'profile') and obj.profile:
+            return ProfileSerializer(obj.profile, context=self.context).data
+        return None
 
     def get_active_role(self, obj):
         try:

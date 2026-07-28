@@ -9,13 +9,8 @@ urlpatterns = [
     path('favicon.ico', RedirectView.as_view(url=settings.STATIC_URL + 'images/favicon.png')),
     path('admin/', admin.site.urls),
     path('accounts/', include('allauth.urls')),
-    path('', include('chema.urls')),
-    path('', include('user.urls')),
-    path('', include('condolence.urls')),
     path('', include('wallet.urls')),
     path('api/v1/', include('api_v1.urls')),
-    
-   
 ]
 
 if settings.DEBUG:

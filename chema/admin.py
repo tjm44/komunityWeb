@@ -71,19 +71,22 @@ class GroupAdmin(admin.ModelAdmin):
 @admin.register(Organisation)
 class OrganisationAdmin(admin.ModelAdmin):
     list_display = ('name', 'entity_type', 'is_verified', 'is_active', 'creator', 'created_at')
-    search_fields = ('name', 'description', 'registration_number', 'creator__email')
+    search_fields = ('name', 'description', 'registration_number', 'creator__email', 'email', 'phone_number')
     list_filter = ('entity_type', 'is_verified', 'is_active', 'created_at')
     readonly_fields = ('created_at', 'updated_at')
-    raw_id_fields = ('creator',)
+    raw_id_fields = ('creator', 'admin2', 'admin3')
     fieldsets = (
         ('Basic Info', {
             'fields': ('name', 'description', 'cover_image', 'is_active')
+        }),
+        ('Contact Info', {
+            'fields': ('email', 'phone_number')
         }),
         ('Legal Details', {
             'fields': ('entity_type', 'registration_number', 'is_verified')
         }),
         ('Ownership', {
-            'fields': ('creator', 'admins')
+            'fields': ('creator', 'admins', 'admin2', 'admin3')
         }),
         ('Wallet', {
             'fields': ('external_wallet_id',),

@@ -6,6 +6,8 @@ from rest_framework.permissions import AllowAny
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.authtoken.models import Token
 from rest_framework.views import APIView
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
+
 from django.contrib.auth import authenticate
 from rest_framework import serializers as drf_serializers
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -392,6 +394,7 @@ class IsPostImageAuthorOrReadOnly(permissions.BasePermission):
 class ProfileViewSet(viewsets.ModelViewSet):
     queryset = Profile.objects.all()
     serializer_class = ProfileSerializer
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_queryset(self):
         # Allow users to only see their own profile or public profiles
@@ -910,6 +913,59 @@ class GroupMembershipViewSet(viewsets.ModelViewSet):
             'is_admin': membership.is_admin
         })
 
+    @action(detail=True, methods=['patch', 'post'])
+    def update_member_management(self, request, pk=None):
+        membership = self.get_object()
+        if not membership.group.is_admin(request.user):
+            return Response({'error': 'Not authorized. Only group admins can update member details.'}, status=status.HTTP_403_FORBIDDEN)
+
+        profile = membership.member
+        data = request.data
+
+        # 1. Update Role
+        if 'role' in data:
+            new_role = data['role']
+            if new_role in dict(GroupMembership.ROLE_CHOICES):
+                if membership.member.user != membership.group.creator or new_role != 'member':
+                    membership.role = new_role
+                    membership.is_admin = (new_role in ['admin', 'moderator'])
+
+        # 2. Update Active status
+        if 'is_active' in data:
+            is_act = bool(data['is_active'])
+            membership.is_active = is_act
+            if is_act:
+                membership.status = 'active'
+            else:
+                membership.status = 'inactive'
+
+        # 3. Update Deceased status
+        if 'is_deceased' in data:
+            is_dec = bool(data['is_deceased'])
+            membership.is_deceased = is_dec
+            profile.is_deceased = is_dec
+            if is_dec:
+                membership.is_active = False
+                membership.status = 'inactive'
+                deceased_record = Deceased.objects.filter(deceased=profile).first()
+                if not deceased_record:
+                    Deceased.objects.create(
+                        deceased=profile,
+                        group=membership.group,
+                        group_admin=request.user.profile
+                    )
+
+        # 4. Update Date of Death
+        if 'date_of_death' in data:
+            dod = data['date_of_death']
+            profile.date_of_death = dod if dod else None
+
+        membership.save()
+        profile.save()
+
+        serializer = GroupMembershipSerializer(membership, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
 class PostViewSet(viewsets.ModelViewSet):
     queryset = Post.objects.filter(approved=True).order_by('-created_at')
     serializer_class = PostSerializer
@@ -1130,6 +1186,40 @@ class WalletViewSet(viewsets.ModelViewSet):
     def balance(self, request):
         wallet, _ = Wallet.objects.get_or_create(user=request.user, defaults={'external_wallet_id': f"WAAS_{request.user.id}"})
         return Response({'balance': wallet.get_balance()})
+
+    @action(detail=False, methods=['get'], url_path='lookup-recipient')
+    def lookup_recipient(self, request):
+        """Look up a user profile by phone number for P2P send verification."""
+        phone = request.query_params.get('phone', '').strip()
+        if not phone:
+            return Response({'error': 'Phone number is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Normalise: strip spaces/dashes
+        phone_clean = phone.replace(' ', '').replace('-', '')
+
+        # Try to find by user phone or profile phone
+        from django.db.models import Q
+        user = CustomUser.objects.filter(
+            Q(phone=phone_clean) | Q(profile__phone=phone_clean)
+        ).first()
+
+        if not user:
+            return Response({'error': 'No Komunity account found for this phone number.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if user == request.user:
+            return Response({'error': 'You cannot send money to yourself.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        profile = getattr(user, 'profile', None)
+        full_name = getattr(profile, 'full_name', None) or (
+            f"{getattr(profile, 'first_name', '')} {getattr(profile, 'surname', '')}".strip()
+        ) or user.phone or str(user.id)
+
+        return Response({
+            'user_id': user.id,
+            'full_name': full_name,
+            'phone': phone_clean,
+            'is_verified': getattr(profile, 'is_verified', False),
+        })
 
     @action(detail=False, methods=['post'])
     def top_up(self, request):
@@ -1569,20 +1659,34 @@ class FundCampaignViewSet(viewsets.ModelViewSet):
             from rest_framework.exceptions import ValidationError
             raise ValidationError("A campaign must be linked to either a Group or an Organisation.")
 
-        # Emergency campaigns are always public
+        # Emergency campaigns are always public.
+        # Custom campaigns on a verified organisation are also public (visible in Fundraisers tab).
         campaign_type = serializer.validated_data.get('campaign_type', 'custom')
         is_public = (campaign_type == 'emergency')
+        if campaign_type == 'custom' and organisation and organisation.is_verified:
+            is_public = True
         serializer.save(created_by=self.request.user.profile, is_public=is_public)
 
     # ── Public fundraisers list (no auth filter) ─────────────────────────────
     @action(detail=False, methods=['get'], permission_classes=[permissions.AllowAny])
     def public(self, request):
-        """Returns all active public (emergency) campaigns visible to any user."""
+        """
+        Returns all active public campaigns visible to any user.
+        Includes:
+          - Emergency campaigns from verified organisations
+          - Custom campaigns from verified organisations
+          - Emergency/custom campaigns from groups (group-linked)
+        """
+        from django.db.models import Q
         campaigns = FundCampaign.objects.filter(
             is_public=True,
             contributions_open=True,
-            organisation__is_verified=True,
-        ).select_related('organisation', 'beneficiary', 'created_by').order_by('-created_at')
+        ).filter(
+            # Either linked to a verified org, or linked to a group (no verification required for groups)
+            Q(organisation__is_verified=True) | Q(group__isnull=False, organisation__isnull=True)
+        ).select_related(
+            'organisation', 'group', 'beneficiary', 'created_by'
+        ).order_by('-created_at')
         serializer = self.get_serializer(campaigns, many=True)
         return Response(serializer.data)
 

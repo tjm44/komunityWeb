@@ -176,10 +176,14 @@ class Organisation(models.Model):
     name = models.CharField(max_length=100)
     is_active = models.BooleanField(default=True)
     description = models.TextField(null=True, blank=True)
+    email = models.EmailField(null=True, blank=True)
+    phone_number = models.CharField(max_length=20, null=True, blank=True)
     date = models.DateTimeField(auto_now_add=True)
     cover_image = models.ImageField(upload_to='organisation_cover_images', null=True, blank=True)
     creator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='created_organisations', null=True, blank=True)
     admins  = models.ManyToManyField(settings.AUTH_USER_MODEL, related_name='admin_organisations', blank=True)
+    admin2 = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, related_name='admin2_organisations', null=True, blank=True)
+    admin3 = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, related_name='admin3_organisations', null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -218,6 +222,8 @@ class Organisation(models.Model):
         if user == self.creator:
             return True
         if user in self.admins.all():
+            return True
+        if user == self.admin2 or user == self.admin3:
             return True
         return False
 
