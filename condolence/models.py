@@ -203,7 +203,6 @@ class CampaignContribution(models.Model):
 
     class Meta:
         ordering = ['-contribution_date']
-        unique_together = ('campaign', 'contributing_member')
 
     def __str__(self):
         return (

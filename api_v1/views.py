@@ -421,8 +421,8 @@ class ProfileViewSet(viewsets.ModelViewSet):
         id_number = request.data.get('id_number')
         id_type = request.data.get('id_type', 'national_id')
         
-        from user.kyc import MockKYCProvider
-        success, message = MockKYCProvider.verify_document(
+        from user.kyc import FlutterwaveKYCProvider
+        success, message = FlutterwaveKYCProvider.verify_document(
             first_name=profile.first_name,
             surname=profile.surname,
             id_number=id_number,
@@ -1162,19 +1162,33 @@ class ContributionViewSet(viewsets.ModelViewSet):
     serializer_class = ContributionSerializer
     pagination_class = StandardPagination
 
-    def get_queryset(self):
-        queryset = Contribution.objects.filter(contributing_member=self.request.user.profile)
-        group_id = self.request.query_params.get('group_id')
+    def list(self, request, *args, **kwargs):
+        profile = request.user.profile
+        # Fetch both deceased contributions and campaign contributions
+        legacy_contribs = Contribution.objects.filter(contributing_member=profile)
+        camp_contribs = CampaignContribution.objects.filter(contributing_member=profile)
+
+        group_id = request.query_params.get('group_id')
         if group_id:
-            queryset = queryset.filter(group_id=group_id)
-        else:
-            active_mem = GroupMembership.objects.filter(
-                member=self.request.user.profile, 
-                is_active=True
-            ).first()
-            if active_mem:
-                queryset = queryset.filter(group=active_mem.group)
-        return queryset.order_by('-contribution_date')
+            legacy_contribs = legacy_contribs.filter(group_id=group_id)
+            camp_contribs = camp_contribs.filter(group_id=group_id)
+
+        legacy_data = ContributionSerializer(legacy_contribs, many=True, context={'request': request}).data
+        camp_data = CampaignContributionSerializer(camp_contribs, many=True, context={'request': request}).data
+
+        # Standardize items
+        combined = []
+        for item in legacy_data:
+            item['type'] = 'deceased'
+            combined.append(item)
+        for item in camp_data:
+            item['type'] = 'campaign'
+            item['contribution_date'] = item.get('contribution_date')
+            combined.append(item)
+
+        # Sort by contribution_date descending
+        combined.sort(key=lambda x: x.get('contribution_date') or '', reverse=True)
+        return Response(combined)
 
 class WalletViewSet(viewsets.ModelViewSet):
     serializer_class = WalletSerializer
@@ -1224,23 +1238,50 @@ class WalletViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'])
     def top_up(self, request):
         import uuid
-        from wallet.flutterwave import charge_voucher
+        from wallet.flutterwave import charge_voucher, charge_card
 
         wallet, _ = Wallet.objects.get_or_create(
             user=request.user,
             defaults={'external_wallet_id': f"WAAS_{request.user.id}"}
         )
-        voucher_pin = request.data.get('voucher_pin')
 
-        if not voucher_pin:
-            return Response({'error': 'voucher_pin is required'}, status=status.HTTP_400_BAD_REQUEST)
+        payment_method = request.data.get('payment_method', 'voucher')
+        if payment_method not in ('voucher', 'card'):
+            return Response({'error': 'Invalid payment_method. Must be card or voucher.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        voucher_pin = None
+        card_number = None
+        expiry_month = None
+        expiry_year = None
+        cvv = None
+        amount = 100.00
+
+        if payment_method == 'voucher':
+            voucher_pin = request.data.get('voucher_pin')
+            if not voucher_pin:
+                return Response({'error': 'voucher_pin is required'}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            card_number = request.data.get('card_number')
+            expiry_month = request.data.get('expiry_month')
+            expiry_year = request.data.get('expiry_year')
+            cvv = request.data.get('cvv')
+            amount_val = request.data.get('amount')
+
+            if not all([card_number, expiry_month, expiry_year, cvv, amount_val]):
+                return Response({'error': 'card_number, expiry_month, expiry_year, cvv, and amount are required'}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                amount = float(amount_val)
+                if amount <= 0:
+                    raise ValueError()
+            except ValueError:
+                return Response({'error': 'Invalid amount.'}, status=status.HTTP_400_BAD_REQUEST)
 
         # Create a PENDING transaction log entry first
         tx_ref = f"api-topup-{uuid.uuid4().hex[:8]}"
         transaction = Transaction.objects.create(
             wallet=wallet,
             transaction_type='TOP_UP',
-            amount=0,
+            amount=0 if payment_method == 'voucher' else amount,
             status='PENDING',
             voucher_reference=voucher_pin,
         )
@@ -1249,17 +1290,30 @@ class WalletViewSet(viewsets.ModelViewSet):
         phone = getattr(getattr(request.user, 'profile', None), 'phone', None) or '0000000000'
 
         user_email = getattr(getattr(request.user, 'profile', None), 'email', 'user@example.com') or 'user@example.com'
+        
         # Call Flutterwave Sandbox
-        flw_response = charge_voucher(
-            voucher_pin=voucher_pin,
-            amount=100.00,   # Sandbox: default 100 ZAR; amount comes back from the voucher
-            email=user_email,
-            phone_number=phone,
-            tx_ref=tx_ref
-        )
+        if payment_method == 'voucher':
+            flw_response = charge_voucher(
+                voucher_pin=voucher_pin,
+                amount=100.00,   # Sandbox: default 100 ZAR; amount comes back from the voucher
+                email=user_email,
+                phone_number=phone,
+                tx_ref=tx_ref
+            )
+        else:
+            flw_response = charge_card(
+                card_number=card_number,
+                expiry_month=expiry_month,
+                expiry_year=expiry_year,
+                cvv=cvv,
+                amount=amount,
+                email=user_email,
+                phone_number=phone,
+                tx_ref=tx_ref
+            )
 
         if flw_response.get('success'):
-            amount_val = flw_response.get('amount', 100.00)
+            amount_val = flw_response.get('amount', amount)
             transaction.status = 'COMPLETED'
             transaction.amount = amount_val
             transaction.waas_reference_id = str(flw_response.get('waas_ref', tx_ref))
@@ -1274,7 +1328,7 @@ class WalletViewSet(viewsets.ModelViewSet):
             transaction.status = 'FAILED'
             transaction.save()
             return Response(
-                {'error': flw_response.get('error', 'Voucher redemption failed.')},
+                {'error': flw_response.get('error', 'Top-up failed.')},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -1363,6 +1417,11 @@ class WalletViewSet(viewsets.ModelViewSet):
         if sender_wallet.get_balance() < amount_val:
             return Response({'error': 'Insufficient balance'}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Resolve sender/recipient display names for notes
+        sender_name = getattr(getattr(request.user, 'profile', None), 'full_name', None) or str(request.user)
+        recipient_name = getattr(getattr(recipient_user, 'profile', None), 'full_name', None) or str(recipient_user)
+        p2p_ref = f"P2P_{timezone.now().timestamp()}"
+
         # Create both transactions atomically
         with db_transaction.atomic():
             # Debit from sender
@@ -1372,16 +1431,19 @@ class WalletViewSet(viewsets.ModelViewSet):
                 amount=amount,
                 status='COMPLETED',
                 recipient_wallet=recipient_wallet,
-                waas_reference_id=f"P2P_{timezone.now().timestamp()}"
+                note=f"Sent to {recipient_name}" + (f" — {note}" if note else ""),
+                waas_reference_id=p2p_ref,
             )
 
-            # Credit to recipient
+            # Credit to recipient — link back the sender wallet
             recipient_txn = Transaction.objects.create(
                 wallet=recipient_wallet,
                 transaction_type='P2P_RECEIVED',
                 amount=amount,
                 status='COMPLETED',
-                waas_reference_id=f"P2P_{timezone.now().timestamp()}"
+                sender_wallet=sender_wallet,
+                note=f"Received from {sender_name}" + (f" — {note}" if note else ""),
+                waas_reference_id=p2p_ref,
             )
             sender_wallet.recalculate_balance()
             recipient_wallet.recalculate_balance()
@@ -1427,6 +1489,12 @@ class WalletViewSet(viewsets.ModelViewSet):
         if wallet.get_balance() < amount_val:
             return Response({'error': 'Insufficient balance'}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Resolve deceased name for note
+        try:
+            _dec_name = deceased.deceased.full_name
+        except Exception:
+            _dec_name = str(deceased)
+
         # Create transaction and contribution atomically
         with db_transaction.atomic():
             # Create wallet transaction
@@ -1436,6 +1504,7 @@ class WalletViewSet(viewsets.ModelViewSet):
                 amount=amount,
                 status='COMPLETED',
                 deceased_contribution=deceased,
+                note=f"Contribution to bereavement: {_dec_name}",
                 waas_reference_id=f"DEC_{timezone.now().timestamp()}"
             )
 
@@ -1708,10 +1777,6 @@ class FundCampaignViewSet(viewsets.ModelViewSet):
 
         profile = request.user.profile
 
-        # Prevent duplicate contribution
-        if CampaignContribution.objects.filter(campaign=campaign, contributing_member=profile).exists():
-            return Response({'error': 'You have already contributed to this campaign.'}, status=status.HTTP_400_BAD_REQUEST)
-
         from wallet.models import Wallet, Transaction as WalletTransaction
         from django.db import transaction as db_transaction
 
@@ -1771,56 +1836,143 @@ class FundCampaignViewSet(viewsets.ModelViewSet):
             'contributor_count': campaign.get_contributor_count(),
         }, status=status.HTTP_201_CREATED)
 
-    # ── Disburse funds to beneficiary ─────────────────────────────────────────
+    # ── Campaign Ledger & Audit Trail ──────────────────────────────────────────
+    @action(detail=True, methods=['get'])
+    def ledger(self, request, pk=None):
+        """Retrieve full financial ledger for this specific campaign."""
+        campaign = self.get_object()
+        contributions = CampaignContribution.objects.filter(campaign=campaign).select_related('contributing_member__user')
+        from wallet.models import Transaction as WalletTransaction
+        withdrawals = WalletTransaction.objects.filter(fund_campaign=campaign, transaction_type='PAYOUT_RECEIVED').select_related('wallet__user')
+
+        contributions_data = []
+        for c in contributions:
+            contributions_data.append({
+                'id': f"contrib-{c.id}",
+                'type': 'contribution',
+                'amount': float(c.amount),
+                'contributor_name': c.contributing_member.full_name if c.contributing_member else 'Anonymous',
+                'contributor_avatar': c.contributing_member.profile_picture.url if c.contributing_member and c.contributing_member.profile_picture else None,
+                'payment_method': c.payment_method,
+                'date': c.contribution_date.isoformat() if c.contribution_date else None,
+                'note': c.note or '',
+                'timestamp': c.contribution_date.isoformat() if c.contribution_date else None,
+            })
+
+        withdrawals_data = []
+        for w in withdrawals:
+            recipient_profile = getattr(w.wallet.user, 'profile', None) if hasattr(w.wallet.user, 'profile') else None
+            withdrawals_data.append({
+                'id': f"withdraw-{w.id}",
+                'type': 'withdrawal',
+                'amount': float(w.amount),
+                'recipient_name': recipient_profile.full_name if recipient_profile else (w.wallet.user.username if hasattr(w.wallet.user, 'username') else str(w.wallet.user)),
+                'status': w.status,
+                'date': w.timestamp.strftime('%Y-%m-%d') if w.timestamp else None,
+                'timestamp': w.timestamp.isoformat() if w.timestamp else None,
+                # Use the human-readable note field; fall back to a generic label
+                'note': w.note or 'Campaign disbursement',
+            })
+
+        # Combine timeline sorted by timestamp descending
+        timeline = sorted(contributions_data + withdrawals_data, key=lambda x: x.get('timestamp') or '', reverse=True)
+
+        return Response({
+            'campaign_id': campaign.id,
+            'title': campaign.title,
+            'campaign_type': campaign.campaign_type,
+            'total_raised': float(campaign.get_total_raised()),
+            'total_disbursed': float(campaign.get_total_disbursed()),
+            'available_balance': float(campaign.get_balance()),
+            'contributor_count': campaign.get_contributor_count(),
+            'contributions': contributions_data,
+            'withdrawals': withdrawals_data,
+            'timeline': timeline,
+        })
+
+    # ── Disburse/Withdraw funds (partial or full) ──────────────────────────────
     @action(detail=True, methods=['post'])
     def disburse(self, request, pk=None):
-        """Transfer the collected balance to the beneficiary's wallet (admin only)."""
+        """Transfer funds from the campaign balance (admin only). Supports partial withdrawals."""
         campaign = self.get_object()
         is_admin = campaign.group.is_admin(request.user) if campaign.group else campaign.organisation.is_admin(request.user)
         if not is_admin:
-            return Response({'error': 'Only admins can disburse funds.'}, status=status.HTTP_403_FORBIDDEN)
-        if not campaign.beneficiary:
-            return Response({'error': 'No beneficiary assigned to this campaign.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'Only admins can withdraw/disburse campaign funds.'}, status=status.HTTP_403_FORBIDDEN)
 
-        balance = campaign.get_balance()
-        if balance <= 0:
-            return Response({'error': 'No funds available for disbursement.'}, status=status.HTTP_400_BAD_REQUEST)
+        available_balance = campaign.get_balance()
+        if available_balance <= 0:
+            return Response({'error': 'No funds available for withdrawal.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Handle amount
+        req_amount = request.data.get('amount')
+        if req_amount is not None:
+            try:
+                from decimal import Decimal
+                withdraw_amount = Decimal(str(req_amount))
+                if withdraw_amount <= 0:
+                    raise ValueError()
+                if withdraw_amount > available_balance:
+                    return Response({'error': f'Requested amount R{withdraw_amount} exceeds available campaign balance R{available_balance}.'}, status=status.HTTP_400_BAD_REQUEST)
+            except Exception:
+                return Response({'error': 'Invalid withdrawal amount.'}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            withdraw_amount = available_balance
+
+        # Handle beneficiary / recipient
+        beneficiary_id = request.data.get('beneficiary_id')
+        recipient_profile = None
+        if beneficiary_id:
+            from user.models import Profile
+            recipient_profile = Profile.objects.filter(id=beneficiary_id).first()
+        if not recipient_profile:
+            recipient_profile = campaign.beneficiary or request.user.profile
+
+        note = request.data.get('note', '')
 
         from wallet.models import Wallet, Transaction as WalletTransaction
         from django.db import transaction as db_transaction
 
-        beneficiary_wallet, _ = Wallet.objects.get_or_create(
-            user=campaign.beneficiary.user,
-            defaults={'external_wallet_id': f"WAAS_{campaign.beneficiary.user.id}"}
+        recipient_wallet, _ = Wallet.objects.get_or_create(
+            user=recipient_profile.user,
+            defaults={'external_wallet_id': f"WAAS_{recipient_profile.user.id}"}
         )
 
         with db_transaction.atomic():
+            human_note = note if note else f"Disbursement from campaign: {campaign.title}"
             tx = WalletTransaction.objects.create(
-                wallet=beneficiary_wallet,
+                wallet=recipient_wallet,
                 transaction_type='PAYOUT_RECEIVED',
-                amount=balance,
+                amount=withdraw_amount,
                 status='COMPLETED',
                 destination_group=campaign.group,
                 destination_organisation=campaign.organisation,
                 fund_campaign=campaign,
-                waas_reference_id=f"PAY_CAMP_{timezone.now().timestamp()}"
+                note=human_note,
+                waas_reference_id=f"CAMP_{timezone.now().timestamp()}"
             )
-            beneficiary_wallet.recalculate_balance()
-            campaign.funds_disbursed = True
-            campaign.save()
+            recipient_wallet.recalculate_balance()
+            
+            # Check remaining balance
+            remaining_balance = campaign.get_balance()
+            close_campaign = request.data.get('close_campaign', False)
+            if remaining_balance == 0 or close_campaign:
+                campaign.funds_disbursed = True
+                campaign.save()
 
         send_push_notification(
-            user=campaign.beneficiary.user,
+            user=recipient_profile.user,
             title="Campaign Funds Received",
-            message=f"You received R{balance} from the '{campaign.title}' campaign.",
+            message=f"You received R{withdraw_amount} from the '{campaign.title}' campaign.",
             notification_type="campaign_disbursed",
-            data={'amount': str(balance), 'campaign_id': campaign.id}
+            data={'amount': str(withdraw_amount), 'campaign_id': campaign.id}
         )
 
         return Response({
             'status': 'success',
-            'amount_disbursed': str(balance),
-            'beneficiary': campaign.beneficiary.full_name,
+            'amount_disbursed': str(withdraw_amount),
+            'remaining_balance': str(campaign.get_balance()),
+            'beneficiary': recipient_profile.full_name,
+            'funds_disbursed': campaign.funds_disbursed,
         })
 
     # ── Close campaign ────────────────────────────────────────────────────────

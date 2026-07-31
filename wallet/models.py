@@ -84,6 +84,7 @@ class Transaction(models.Model):
     voucher_reference = models.CharField(max_length=100, blank=True, null=True)
     waas_reference_id = models.CharField(max_length=100, blank=True, null=True)  # The ID from your WaaS provider
     idempotency_key = models.CharField(max_length=100, unique=True, null=True, blank=True)
+    note = models.CharField(max_length=512, blank=True, null=True, help_text="Human-readable purpose/description of this transaction")
     
     timestamp = models.DateTimeField(auto_now_add=True)
 

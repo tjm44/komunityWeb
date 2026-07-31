@@ -1,5 +1,5 @@
 from django.test import TestCase
-from wallet.flutterwave import get_access_token, charge_voucher, initiate_transfer
+from wallet.flutterwave import get_access_token, charge_voucher, charge_card, initiate_transfer
 import uuid
 
 class FlutterwaveIntegrationTest(TestCase):
@@ -25,6 +25,22 @@ class FlutterwaveIntegrationTest(TestCase):
         )
         self.assertIn('success', res)
         print(f"\n[SUCCESS] Voucher charge response received: success={res['success']}")
+
+    def test_card_charge_graceful_fail(self):
+        ref = f"test-card-{uuid.uuid4().hex[:8]}"
+        # Test with invalid card number in sandbox
+        res = charge_card(
+            card_number="1111222233334444",
+            expiry_month="12",
+            expiry_year="30",
+            cvv="123",
+            amount=50.00,
+            email="test@komunity.com",
+            phone_number="0821234567",
+            tx_ref=ref
+        )
+        self.assertIn('success', res)
+        print(f"\n[SUCCESS] Card charge response received: success={res['success']}")
 
 from django.contrib.auth import get_user_model
 from wallet.models import Wallet, Transaction

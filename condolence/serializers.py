@@ -48,15 +48,26 @@ class ContributionSerializer(serializers.ModelSerializer):
 
 class CampaignContributionSerializer(serializers.ModelSerializer):
     contributing_member_detail = ProfileSerializer(source='contributing_member', read_only=True)
+    group_detail = GroupSerializer(source='group', read_only=True)
 
     class Meta:
         model = CampaignContribution
         fields = [
-            'id', 'campaign', 'group', 'organisation', 'contributing_member',
+            'id', 'campaign', 'group', 'group_detail', 'organisation', 'contributing_member',
             'contributing_member_detail', 'amount', 'payment_method',
             'contribution_date', 'note',
         ]
         read_only_fields = ['contributing_member', 'contribution_date']
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if instance.campaign:
+            data['campaign_detail'] = {
+                'id': instance.campaign.id,
+                'title': instance.campaign.title,
+                'campaign_type': instance.campaign.campaign_type,
+            }
+        return data
 
 
 class FundCampaignSerializer(serializers.ModelSerializer):
