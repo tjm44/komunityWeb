@@ -28,6 +28,11 @@ class GroupSerializer(serializers.ModelSerializer):
             'is_selected', 'unread_posts_count', 'membership_status',
             # Fund purpose fields
             'purpose', 'fund_description', 'verified_members_only',
+            # Notification settings
+            'notify_on_member_join', 'notify_on_member_promote', 
+            'notify_on_wallet_transfer', 'notify_on_campaign_created',
+            # Governance
+            'min_disbursement_approvals',
         ]
 
     def get_is_selected(self, obj):

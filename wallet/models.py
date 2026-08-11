@@ -14,19 +14,26 @@ class Wallet(models.Model):
 
     def recalculate_balance(self):
         from decimal import Decimal
-        from django.db.models import Sum
+        from django.db.models import Sum, F, Q, DecimalField
+        from django.db.models.functions import Coalesce
         
-        # Calculate Incoming (Top-Ups + Payouts + Received Transfers)
-        incoming = self.transactions.filter(
+        # Calculate Incoming (Top-Ups + Payouts + Received Transfers) using net_amount if present, else amount
+        incoming_txs = self.transactions.filter(
             transaction_type__in=['TOP_UP', 'PAYOUT_RECEIVED', 'P2P_RECEIVED'],
             status='COMPLETED'
-        ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+        )
+        incoming = Decimal('0.00')
+        for tx in incoming_txs:
+            incoming += (tx.net_amount if tx.net_amount and tx.net_amount > 0 else tx.amount)
 
-        # Calculate Outgoing (Transfers + Withdrawals + Sent Transfers)
-        outgoing = self.transactions.filter(
-            transaction_type__in=['TRANSFER', 'WITHDRAWAL', 'P2P_SENT'],
+        # Calculate Outgoing (Transfers + Withdrawals + Sent Transfers) using gross amount
+        outgoing_txs = self.transactions.filter(
+            transaction_type__in=['TRANSFER', 'WITHDRAWAL', 'P2P_SENT', 'SMS_PACKAGE_PURCHASE'],
             status='COMPLETED'
-        ).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+        )
+        outgoing = Decimal('0.00')
+        for tx in outgoing_txs:
+            outgoing += tx.amount
 
         calculated = incoming - outgoing
         if self.balance != calculated:
@@ -45,6 +52,7 @@ class Transaction(models.Model):
         PAYOUT_RECEIVED = 'PAYOUT_RECEIVED', 'Payout Received'
         P2P_SENT = 'P2P_SENT', 'Peer-to-Peer Sent'
         P2P_RECEIVED = 'P2P_RECEIVED', 'Peer-to-Peer Received'
+        SMS_PACKAGE_PURCHASE = 'SMS_PACKAGE_PURCHASE', 'SMS Package Purchase'
 
     class TransactionStatus(models.TextChoices):
         PENDING = 'PENDING', 'Pending'
@@ -59,6 +67,8 @@ class Transaction(models.Model):
     wallet = models.ForeignKey(Wallet, on_delete=models.PROTECT, related_name="transactions")
     transaction_type = models.CharField(max_length=20, choices=TransactionType.choices)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
+    fee_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Platform fee charged on this transaction")
+    net_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Net amount after deducting platform fee")
     status = models.CharField(max_length=20, choices=TransactionStatus.choices, default=TransactionStatus.PENDING)
     withdrawal_channel = models.CharField(max_length=30, choices=TransactionChannel.choices, blank=True, null=True)
     withdrawal_metadata = models.JSONField(blank=True, null=True)
@@ -103,7 +113,13 @@ class GroupWalletTransferRequest(models.Model):
         (STATUS_REJECTED, 'Rejected'),
     ]
 
-    REQUIRED_APPROVALS = 3
+    note = models.TextField(null=True, blank=True, help_text="Optional context/reason for this transfer request")
+
+    @property
+    def required_approvals(self):
+        """Dynamic approval threshold based on group governance settings and active admin count."""
+        admin_count = self.group.get_admin_count()
+        return max(self.group.min_disbursement_approvals, admin_count)
 
     group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name='wallet_transfer_requests')
     requested_by = models.ForeignKey(
@@ -158,7 +174,7 @@ class GroupWalletTransferRequest(models.Model):
     def can_execute(self):
         return (
             self.status == self.STATUS_PENDING and
-            self.approvals.count() >= self.REQUIRED_APPROVALS and
+            self.approvals.count() >= self.required_approvals and
             self.group.get_balance() >= self.amount
         )
 
@@ -166,7 +182,7 @@ class GroupWalletTransferRequest(models.Model):
         if self.status != self.STATUS_PENDING:
             raise ValueError('Only pending transfer requests can be executed.')
 
-        if self.approvals.count() < self.REQUIRED_APPROVALS:
+        if self.approvals.count() < self.required_approvals:
             raise ValueError('Not enough approvals to execute this transfer request.')
 
         if self.group.get_balance() < self.amount:
@@ -178,10 +194,24 @@ class GroupWalletTransferRequest(models.Model):
                 defaults={'external_wallet_id': f"WAAS_{self.recipient_profile.user.id}"}
             )
 
+            from decimal import Decimal
+            config = PlatformFeeConfig.get_config()
+            gross = Decimal(str(self.amount))
+            fee = Decimal('0.00')
+            net = gross
+
+            if config.is_fees_enabled and gross > 0:
+                pct = config.group_transfer_percentage_fee / Decimal('100.00')
+                flat = config.group_transfer_flat_fee
+                fee = min((gross * pct) + flat, gross).quantize(Decimal('0.01'))
+                net = (gross - fee).quantize(Decimal('0.01'))
+
             transaction = Transaction.objects.create(
                 wallet=recipient_wallet,
                 transaction_type='PAYOUT_RECEIVED',
                 amount=self.amount,
+                fee_amount=fee,
+                net_amount=net,
                 status='COMPLETED',
                 destination_group=self.group,
                 deceased_contribution=self.deceased_contribution,
@@ -190,8 +220,245 @@ class GroupWalletTransferRequest(models.Model):
             )
             recipient_wallet.recalculate_balance()
 
+            if fee > 0:
+                PlatformFeeLedger.objects.create(
+                    transaction=transaction,
+                    fee_type='GROUP_TRANSFER_FEE',
+                    gross_amount=gross,
+                    fee_amount=fee,
+                    net_amount=net
+                )
+
             self.recipient_wallet = recipient_wallet
             self.executed_transaction = transaction
             self.status = self.STATUS_EXECUTED
             self.executed_at = timezone.now()
             self.save()
+
+        # If notify_on_wallet_transfer preference is active, notify group members
+        if self.group.notify_on_wallet_transfer:
+            from user.notifications import send_push_notification
+            for active_mem in self.group.groupmembership_set.filter(status='active').exclude(member=self.recipient_profile):
+                send_push_notification(
+                    user=active_mem.member.user,
+                    title=f"Funds Disbursed from {self.group.name}",
+                    message=f"R {self.amount} has been disbursed from the group wallet to {self.recipient_profile.full_name}.",
+                    notification_type="wallet_transfer_executed",
+                    data={'group_id': self.group.id}
+                )
+
+
+class PlatformFeeConfig(models.Model):
+    """
+    Singleton model for live Django Admin configuration of fee rates across top-ups, withdrawals, and transfers.
+    """
+    is_fees_enabled = models.BooleanField(default=True, help_text="Global toggle to enable or disable platform fee collection")
+    
+    topup_percentage_fee = models.DecimalField(max_digits=5, decimal_places=2, default=2.50, help_text="Top-up percentage fee (%) e.g. 2.50")
+    topup_flat_fee = models.DecimalField(max_digits=8, decimal_places=2, default=0.00, help_text="Flat fee per top-up transaction")
+
+    withdrawal_percentage_fee = models.DecimalField(max_digits=5, decimal_places=2, default=1.50, help_text="Withdrawal percentage fee (%) e.g. 1.50")
+    withdrawal_flat_fee = models.DecimalField(max_digits=8, decimal_places=2, default=5.00, help_text="Flat fee per withdrawal transaction e.g. 5.00")
+
+    group_transfer_percentage_fee = models.DecimalField(max_digits=5, decimal_places=2, default=1.00, help_text="Group disbursement percentage fee (%) e.g. 1.00")
+    group_transfer_flat_fee = models.DecimalField(max_digits=8, decimal_places=2, default=0.00, help_text="Flat fee per group disbursement")
+
+    # Phase 2 Feature Flags & Pricing (Group SaaS & Komunity Plus)
+    is_saas_subscriptions_enabled = models.BooleanField(default=False, help_text="Phase 2 Toggle: Group SaaS subscriptions & Komunity Plus individual badges")
+    group_pro_monthly_price = models.DecimalField(max_digits=10, decimal_places=2, default=150.00, help_text="Monthly price for Group Pro tier (ZAR)")
+    komunity_plus_monthly_price = models.DecimalField(max_digits=10, decimal_places=2, default=35.00, help_text="Monthly price for individual Komunity Plus badge (ZAR)")
+
+    # Phase 3 Feature Flags & Pricing (Vendor Marketplace & Micro-Insurance)
+    is_vendor_marketplace_enabled = models.BooleanField(default=False, help_text="Phase 3 Toggle: B2B Service Vendor Marketplace & Micro-Insurance products")
+    vendor_commission_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=10.00, help_text="Platform commission % on vendor marketplace bookings")
+
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Platform Fee Configuration"
+        verbose_name_plural = "Platform Fee Configuration"
+
+    @classmethod
+    def get_config(cls):
+        config, _ = cls.objects.get_or_create(id=1)
+        return config
+
+    def __str__(self):
+        return f"Platform Fee Config (Fees: {self.is_fees_enabled}, SaaS: {self.is_saas_subscriptions_enabled}, Vendors: {self.is_vendor_marketplace_enabled})"
+
+
+class PlatformFeeLedger(models.Model):
+    """
+    Audit ledger tracking all platform monetization fee earnings.
+    """
+    FEE_TYPES = (
+        ('TOP_UP_FEE', 'Top-Up Fee'),
+        ('WITHDRAWAL_FEE', 'Withdrawal Fee'),
+        ('GROUP_TRANSFER_FEE', 'Group Transfer Fee'),
+        ('SMS_PACKAGE_FEE', 'SMS Package Purchase Fee'),
+        ('GROUP_SAAS_FEE', 'Group SaaS Subscription Fee'),
+        ('KOMUNITY_PLUS_FEE', 'Komunity Plus Subscription Fee'),
+        ('VENDOR_COMMISSION_FEE', 'Vendor Marketplace Commission'),
+        ('INSURANCE_COMMISSION_FEE', 'Micro-Insurance Commission'),
+    )
+
+    transaction = models.ForeignKey(Transaction, on_delete=models.CASCADE, related_name="platform_fees", null=True, blank=True)
+    fee_type = models.CharField(max_length=30, choices=FEE_TYPES)
+    gross_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    fee_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    net_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.get_fee_type_display()}: R{self.fee_amount} on R{self.gross_amount}"
+
+
+class SMSCreditPackage(models.Model):
+    """
+    Pay-As-You-Go SMS Notification packages for group admins.
+    """
+    name = models.CharField(max_length=100)
+    credits_count = models.IntegerField(help_text="Number of SMS notification credits in bundle")
+    price = models.DecimalField(max_digits=10, decimal_places=2, help_text="Price in local currency")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.name} ({self.credits_count} Credits for R{self.price})"
+
+
+class GroupSMSCreditBalance(models.Model):
+    """
+    Current SMS credit balance for a group.
+    """
+    group = models.OneToOneField(Group, on_delete=models.CASCADE, related_name="sms_credit_balance")
+    balance = models.IntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.group.name}: {self.balance} SMS credits"
+
+
+class SMSCreditPurchase(models.Model):
+    """
+    Record of SMS package purchases by group admins.
+    """
+    group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name="sms_purchases")
+    package = models.ForeignKey(SMSCreditPackage, on_delete=models.SET_NULL, null=True)
+    purchased_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True)
+    credits_added = models.IntegerField()
+    amount_paid = models.DecimalField(max_digits=10, decimal_places=2)
+    transaction = models.ForeignKey(Transaction, on_delete=models.SET_NULL, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.credits_added} credits purchased for {self.group.name} by {self.purchased_by}"
+
+
+# ==========================================
+# PHASE 2 MODELS: SaaS & Subscriptions
+# ==========================================
+
+class GroupSubscription(models.Model):
+    TIER_CHOICES = (
+        ('FREE', 'Free Tier'),
+        ('PRO', 'Group Pro'),
+        ('ENTERPRISE', 'Enterprise / NGO'),
+    )
+
+    group = models.OneToOneField(Group, on_delete=models.CASCADE, related_name="subscription")
+    tier = models.CharField(max_length=20, choices=TIER_CHOICES, default='FREE')
+    is_active = models.BooleanField(default=True)
+    monthly_price = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.group.name} - {self.get_tier_display()} (Active: {self.is_active})"
+
+
+class UserSubscription(models.Model):
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="plus_subscription")
+    is_active = models.BooleanField(default=False)
+    badge_label = models.CharField(max_length=50, default="Komunity Plus Member")
+    expires_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.user} - Komunity Plus ({'Active' if self.is_active else 'Expired/Inactive'})"
+
+
+# ==========================================
+# PHASE 3 MODELS: B2B Marketplace & Micro-Insurance
+# ==========================================
+
+class ServiceVendor(models.Model):
+    CATEGORY_CHOICES = (
+        ('FUNERAL_PARLOR', 'Funeral Parlor & Undertaker'),
+        ('CATERING', 'Catering & Event Hire'),
+        ('COUNSELING', 'Mental Health & Counseling'),
+        ('LEGAL_AID', 'Legal Aid & Advisory'),
+        ('WELLNESS', 'Healthcare & Wellness'),
+    )
+
+    name = models.CharField(max_length=150)
+    category = models.CharField(max_length=30, choices=CATEGORY_CHOICES)
+    description = models.TextField(blank=True, null=True)
+    contact_phone = models.CharField(max_length=20)
+    contact_email = models.EmailField(blank=True, null=True)
+    rating = models.DecimalField(max_digits=3, decimal_places=2, default=5.00)
+    is_verified = models.BooleanField(default=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.name} ({self.get_category_display()})"
+
+
+class VendorBooking(models.Model):
+    STATUS_CHOICES = (
+        ('PENDING', 'Pending'),
+        ('CONFIRMED', 'Confirmed'),
+        ('COMPLETED', 'Completed'),
+        ('CANCELLED', 'Cancelled'),
+    )
+
+    vendor = models.ForeignKey(ServiceVendor, on_delete=models.CASCADE, related_name="bookings")
+    group = models.ForeignKey(Group, on_delete=models.SET_NULL, null=True, blank=True)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    service_description = models.CharField(max_length=255)
+    booking_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    commission_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
+    transaction = models.ForeignKey(Transaction, on_delete=models.SET_NULL, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Booking #{self.id} for {self.vendor.name} by {self.user} (R{self.booking_amount})"
+
+
+class MicroInsurancePolicy(models.Model):
+    provider_name = models.CharField(max_length=100, help_text="Partner insurance underwriter")
+    policy_name = models.CharField(max_length=150)
+    cover_amount = models.DecimalField(max_digits=10, decimal_places=2, help_text="Total payout coverage ZAR")
+    monthly_premium = models.DecimalField(max_digits=8, decimal_places=2, help_text="Monthly premium per member")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.policy_name} ({self.provider_name}) - Cover R{self.cover_amount} @ R{self.monthly_premium}/mo"
+
+
+class InsurancePolicyEnrollment(models.Model):
+    policy = models.ForeignKey(MicroInsurancePolicy, on_delete=models.CASCADE, related_name="enrollments")
+    group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name="insurance_policies")
+    enrolled_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True)
+    enrolled_members_count = models.IntegerField(default=1)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.group.name} enrolled in {self.policy.policy_name} ({self.enrolled_members_count} members)"
+
+

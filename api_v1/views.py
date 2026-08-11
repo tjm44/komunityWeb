@@ -297,7 +297,13 @@ from django.db.models import Q
 from chema.models import Group, Post, Comment, GroupMembership, PostImage, Reply, Organisation
 from user.models import Profile
 from condolence.models import Contribution, Deceased
-from wallet.models import Wallet, Transaction, GroupWalletTransferRequest
+from wallet.models import (
+    Wallet, Transaction, GroupWalletTransferRequest,
+    PlatformFeeConfig, PlatformFeeLedger,
+    SMSCreditPackage, GroupSMSCreditBalance, SMSCreditPurchase,
+    GroupSubscription, UserSubscription, ServiceVendor, VendorBooking,
+    MicroInsurancePolicy, InsurancePolicyEnrollment
+)
 
 from chema.serializers import (
     GroupSerializer, PostSerializer, CommentSerializer, 
@@ -306,7 +312,14 @@ from chema.serializers import (
 )
 from user.serializers import ProfileSerializer, UserSerializer, SignupSerializer
 from condolence.serializers import ContributionSerializer, DeceasedSerializer
-from wallet.serializers import WalletSerializer, TransactionSerializer, GroupWalletTransferRequestSerializer
+from wallet.serializers import (
+    WalletSerializer, TransactionSerializer, GroupWalletTransferRequestSerializer,
+    PlatformFeeConfigSerializer, SMSCreditPackageSerializer,
+    GroupSMSCreditBalanceSerializer, SMSCreditPurchaseSerializer,
+    GroupSubscriptionSerializer, UserSubscriptionSerializer,
+    ServiceVendorSerializer, VendorBookingSerializer,
+    MicroInsurancePolicySerializer, InsurancePolicyEnrollmentSerializer
+)
 
 from django.contrib.auth import get_user_model
 CustomUser = get_user_model()
@@ -364,11 +377,12 @@ def waas_api_withdraw(wallet_id, channel, metadata, amount, currency='ZAR'):
         import random
         # Generate a simulated voucher code
         voucher_code = f"VAL-{random.randint(100000, 999999)}"
-        metadata['voucher_code'] = voucher_code
         
         return {
             'success': True,
-            'waas_ref': f"WD_VOUCHER_{timezone.now().timestamp()}"
+            'waas_ref': f"WD_VOUCHER_{timezone.now().timestamp()}",
+            'voucher_code': voucher_code,
+            'partner': partner,
         }
     else:
         return {'success': False, 'error': 'Unsupported withdrawal channel.'}
@@ -575,6 +589,17 @@ class GroupViewSet(viewsets.ModelViewSet):
         if is_active_val:
             # Deactivate others for this user to keep only one active
             GroupMembership.objects.filter(member=profile).exclude(group=group).update(is_active=False)
+            
+            # Notify other members if enabled
+            if group.notify_on_member_join:
+                for active_mem in group.groupmembership_set.filter(status='active').exclude(member=profile):
+                    send_push_notification(
+                        user=active_mem.member.user,
+                        title=f"New Member in {group.name}",
+                        message=f"{profile.full_name} has joined the group.",
+                        notification_type="member_joined",
+                        data={'group_id': group.id}
+                    )
         return Response({'status': membership.status}, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['post'])
@@ -702,10 +727,28 @@ class GroupViewSet(viewsets.ModelViewSet):
             amount=amount_val,
             deceased_contribution=deceased_contribution,
             fund_campaign=fund_campaign,
+            note=request.data.get('note', ''),
         )
+        # Requester counts as first approval
+        transfer_request.approvals.add(request.user)
+        transfer_request.save()
+
+        # If only 1 approval needed, execute immediately
+        if transfer_request.can_execute():
+            try:
+                transfer_request.execute()
+            except Exception as exc:
+                return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            serializer = GroupWalletTransferRequestSerializer(transfer_request, context={'request': request})
+            return Response({'status': 'executed', 'request': serializer.data}, status=status.HTTP_201_CREATED)
 
         serializer = GroupWalletTransferRequestSerializer(transfer_request, context={'request': request})
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response({
+            'status': 'pending_approval',
+            'approvals_given': transfer_request.approvals.count(),
+            'approvals_needed': transfer_request.required_approvals,
+            'request': serializer.data,
+        }, status=status.HTTP_202_ACCEPTED)
 
     @action(detail=True, methods=['post'])
     def approve_wallet_transfer_request(self, request, pk=None):
@@ -732,6 +775,26 @@ class GroupViewSet(viewsets.ModelViewSet):
                 transfer_request.execute()
             except Exception as exc:
                 return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        serializer = GroupWalletTransferRequestSerializer(transfer_request, context={'request': request})
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'])
+    def reject_wallet_transfer_request(self, request, pk=None):
+        group = self.get_object()
+        if not group.is_admin(request.user):
+            return Response({'error': 'Not authorized'}, status=status.HTTP_403_FORBIDDEN)
+
+        transfer_request_id = request.data.get('request_id')
+        if not transfer_request_id:
+            return Response({'error': 'request_id is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        transfer_request = get_object_or_404(GroupWalletTransferRequest, id=transfer_request_id, group=group)
+        if transfer_request.status != GroupWalletTransferRequest.STATUS_PENDING:
+            return Response({'error': 'Transfer request is not pending.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        transfer_request.status = GroupWalletTransferRequest.STATUS_REJECTED
+        transfer_request.save()
 
         serializer = GroupWalletTransferRequestSerializer(transfer_request, context={'request': request})
         return Response(serializer.data)
@@ -827,6 +890,17 @@ class GroupMembershipViewSet(viewsets.ModelViewSet):
             notification_type="membership_approved",
             data={'group_id': membership.group.id}
         )
+
+        # Notify other members if enabled
+        if membership.group.notify_on_member_join:
+            for active_mem in membership.group.groupmembership_set.filter(status='active').exclude(member=membership.member):
+                send_push_notification(
+                    user=active_mem.member.user,
+                    title=f"New Member in {membership.group.name}",
+                    message=f"{membership.member.full_name} has joined the group.",
+                    notification_type="member_joined",
+                    data={'group_id': membership.group.id}
+                )
         
         return Response({'status': 'active'})
 
@@ -903,9 +977,20 @@ class GroupMembershipViewSet(viewsets.ModelViewSet):
             )
 
         membership.role = new_role
-        # Sync is_admin flag for compatibility with older components
+        was_admin = membership.is_admin
         membership.is_admin = new_role in ['admin', 'moderator']
         membership.save()
+
+        # Notify other members if promoted and notify_on_member_promote is enabled
+        if membership.is_admin and not was_admin and membership.group.notify_on_member_promote:
+            for active_mem in membership.group.groupmembership_set.filter(status='active').exclude(member=membership.member):
+                send_push_notification(
+                    user=active_mem.member.user,
+                    title="Group Admin Promoted",
+                    message=f"{membership.member.full_name} has been promoted to Admin in {membership.group.name}.",
+                    notification_type="member_promoted",
+                    data={'group_id': membership.group.id}
+                )
 
         return Response({
             'status': 'role updated',
@@ -923,6 +1008,7 @@ class GroupMembershipViewSet(viewsets.ModelViewSet):
         data = request.data
 
         # 1. Update Role
+        was_admin = membership.is_admin
         if 'role' in data:
             new_role = data['role']
             if new_role in dict(GroupMembership.ROLE_CHOICES):
@@ -962,6 +1048,17 @@ class GroupMembershipViewSet(viewsets.ModelViewSet):
 
         membership.save()
         profile.save()
+
+        # Notify other members if promoted and notify_on_member_promote is enabled
+        if membership.is_admin and not was_admin and membership.group.notify_on_member_promote:
+            for active_mem in membership.group.groupmembership_set.filter(status='active').exclude(member=membership.member):
+                send_push_notification(
+                    user=active_mem.member.user,
+                    title="Group Admin Promoted",
+                    message=f"{membership.member.full_name} has been promoted to Admin in {membership.group.name}.",
+                    notification_type="member_promoted",
+                    data={'group_id': membership.group.id}
+                )
 
         serializer = GroupMembershipSerializer(membership, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -1112,8 +1209,38 @@ class DeceasedViewSet(viewsets.ModelViewSet):
         balance = deceased.get_balance()
         if balance <= 0:
             return Response({'error': 'No funds available for disbursement'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Perform payout
+
+        # Multi-admin approval path
+        if deceased.group and (deceased.group.min_disbursement_approvals > 1 or deceased.group.get_admin_count() > 1):
+            from wallet.models import GroupWalletTransferRequest
+            from wallet.serializers import GroupWalletTransferRequestSerializer
+
+            transfer_request = GroupWalletTransferRequest.objects.create(
+                group=deceased.group,
+                requested_by=request.user,
+                recipient_profile=deceased.beneficiary,
+                amount=balance,
+                deceased_contribution=deceased,
+                note=f"Bereavement payout for {deceased.full_name}",
+            )
+            transfer_request.approvals.add(request.user)
+            transfer_request.save()
+
+            if transfer_request.can_execute():
+                try:
+                    transfer_request.execute()
+                except Exception as exc:
+                    return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+                serializer = GroupWalletTransferRequestSerializer(transfer_request, context={'request': request})
+                return Response({'status': 'executed', 'request': serializer.data})
+
+            serializer = GroupWalletTransferRequestSerializer(transfer_request, context={'request': request})
+            return Response({
+                'status': 'pending_approval',
+                'approvals_given': transfer_request.approvals.count(),
+                'approvals_needed': transfer_request.required_approvals,
+                'request': serializer.data,
+            }, status=status.HTTP_202_ACCEPTED)
         from wallet.models import Wallet, Transaction
         from django.db import transaction as db_transaction
         
@@ -1190,6 +1317,54 @@ class ContributionViewSet(viewsets.ModelViewSet):
         combined.sort(key=lambda x: x.get('contribution_date') or '', reverse=True)
         return Response(combined)
 
+def _apply_platform_fee(transaction, fee_type):
+    from decimal import Decimal
+    from wallet.models import PlatformFeeConfig, PlatformFeeLedger
+
+    config = PlatformFeeConfig.get_config()
+    gross = Decimal(str(transaction.amount))
+
+    if not config.is_fees_enabled or gross <= 0:
+        transaction.fee_amount = Decimal('0.00')
+        transaction.net_amount = gross
+        transaction.save(update_fields=['fee_amount', 'net_amount'])
+        return
+
+    if fee_type == 'TOP_UP':
+        pct = config.topup_percentage_fee / Decimal('100.00')
+        flat = config.topup_flat_fee
+        ledger_type = 'TOP_UP_FEE'
+    elif fee_type == 'WITHDRAWAL':
+        pct = config.withdrawal_percentage_fee / Decimal('100.00')
+        flat = config.withdrawal_flat_fee
+        ledger_type = 'WITHDRAWAL_FEE'
+    elif fee_type == 'GROUP_TRANSFER':
+        pct = config.group_transfer_percentage_fee / Decimal('100.00')
+        flat = config.group_transfer_flat_fee
+        ledger_type = 'GROUP_TRANSFER_FEE'
+    else:
+        pct = Decimal('0.00')
+        flat = Decimal('0.00')
+        ledger_type = 'TOP_UP_FEE'
+
+    fee = (gross * pct) + flat
+    fee = min(fee, gross).quantize(Decimal('0.01'))
+    net = (gross - fee).quantize(Decimal('0.01'))
+
+    transaction.fee_amount = fee
+    transaction.net_amount = net
+    transaction.save(update_fields=['fee_amount', 'net_amount'])
+
+    if fee > 0:
+        PlatformFeeLedger.objects.create(
+            transaction=transaction,
+            fee_type=ledger_type,
+            gross_amount=gross,
+            fee_amount=fee,
+            net_amount=net
+        )
+
+
 class WalletViewSet(viewsets.ModelViewSet):
     serializer_class = WalletSerializer
 
@@ -1200,6 +1375,352 @@ class WalletViewSet(viewsets.ModelViewSet):
     def balance(self, request):
         wallet, _ = Wallet.objects.get_or_create(user=request.user, defaults={'external_wallet_id': f"WAAS_{request.user.id}"})
         return Response({'balance': wallet.get_balance()})
+
+    @action(detail=False, methods=['get'], url_path='fee-config')
+    def fee_config(self, request):
+        from decimal import Decimal
+        config = PlatformFeeConfig.get_config()
+        serializer = PlatformFeeConfigSerializer(config)
+        
+        amount = request.query_params.get('amount')
+        fee_type = request.query_params.get('type', 'TOP_UP')
+        
+        quote = None
+        if amount:
+            try:
+                amt = Decimal(str(amount))
+                if fee_type == 'TOP_UP':
+                    pct = config.topup_percentage_fee / Decimal('100.00')
+                    flat = config.topup_flat_fee
+                elif fee_type == 'WITHDRAWAL':
+                    pct = config.withdrawal_percentage_fee / Decimal('100.00')
+                    flat = config.withdrawal_flat_fee
+                else:
+                    pct = config.group_transfer_percentage_fee / Decimal('100.00')
+                    flat = config.group_transfer_flat_fee
+                
+                if config.is_fees_enabled:
+                    fee = min((amt * pct) + flat, amt).quantize(Decimal('0.01'))
+                    net = (amt - fee).quantize(Decimal('0.01'))
+                else:
+                    fee = Decimal('0.00')
+                    net = amt
+                    
+                quote = {
+                    'gross_amount': str(amt),
+                    'fee_amount': str(fee),
+                    'net_amount': str(net)
+                }
+            except Exception:
+                pass
+                
+        return Response({
+            'config': serializer.data,
+            'quote': quote
+        })
+
+    @action(detail=False, methods=['get'], url_path='sms-packages')
+    def sms_packages(self, request):
+        from decimal import Decimal
+        if not SMSCreditPackage.objects.exists():
+            SMSCreditPackage.objects.bulk_create([
+                SMSCreditPackage(name="Starter Pack", credits_count=50, price=Decimal('25.00')),
+                SMSCreditPackage(name="Standard Pack", credits_count=200, price=Decimal('90.00')),
+                SMSCreditPackage(name="Pro Pack", credits_count=500, price=Decimal('200.00')),
+            ])
+        packages = SMSCreditPackage.objects.filter(is_active=True).order_by('price')
+        serializer = SMSCreditPackageSerializer(packages, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['post'], url_path='buy-sms-package')
+    def buy_sms_package(self, request):
+        from decimal import Decimal
+        package_id = request.data.get('package_id')
+        group_id = request.data.get('group_id')
+        
+        if not package_id or not group_id:
+            return Response({'error': 'package_id and group_id are required.'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        try:
+            package = SMSCreditPackage.objects.get(id=package_id, is_active=True)
+            group = Group.objects.get(id=group_id)
+        except (SMSCreditPackage.DoesNotExist, Group.DoesNotExist):
+            return Response({'error': 'Invalid SMS package or group.'}, status=status.HTTP_404_NOT_FOUND)
+            
+        # Verify user is group admin or staff
+        membership = group.groupmembership_set.filter(member__user=request.user, role='admin', status='active').first()
+        if not membership and not request.user.is_staff:
+            return Response({'error': 'Only group admins can purchase SMS packages.'}, status=status.HTTP_403_FORBIDDEN)
+            
+        wallet, _ = Wallet.objects.get_or_create(user=request.user, defaults={'external_wallet_id': f"WAAS_{request.user.id}"})
+        if wallet.get_balance() < package.price:
+            return Response({'error': f'Insufficient wallet balance. R{package.price} required.'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        from django.db import transaction as db_transaction
+        with db_transaction.atomic():
+            tx = Transaction.objects.create(
+                wallet=wallet,
+                transaction_type='SMS_PACKAGE_PURCHASE',
+                amount=package.price,
+                fee_amount=Decimal('0.00'),
+                net_amount=package.price,
+                status='COMPLETED',
+                destination_group=group,
+                note=f"Purchased {package.name} ({package.credits_count} SMS credits)"
+            )
+            wallet.recalculate_balance()
+            
+            sms_bal, _ = GroupSMSCreditBalance.objects.get_or_create(group=group)
+            sms_bal.balance += package.credits_count
+            sms_bal.save()
+            
+            purchase = SMSCreditPurchase.objects.create(
+                group=group,
+                package=package,
+                purchased_by=request.user,
+                credits_added=package.credits_count,
+                amount_paid=package.price,
+                transaction=tx
+            )
+            
+            PlatformFeeLedger.objects.create(
+                transaction=tx,
+                fee_type='SMS_PACKAGE_FEE',
+                gross_amount=package.price,
+                fee_amount=package.price,
+                net_amount=Decimal('0.00')
+            )
+            
+        return Response({
+            'status': 'success',
+            'new_sms_balance': sms_bal.balance,
+            'purchase': SMSCreditPurchaseSerializer(purchase).data
+        })
+
+    @action(detail=False, methods=['get'], url_path='group-sms-balance')
+    def group_sms_balance(self, request):
+        group_id = request.query_params.get('group_id')
+        if not group_id:
+            return Response({'error': 'group_id query param required.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            group = Group.objects.get(id=group_id)
+            sms_bal, _ = GroupSMSCreditBalance.objects.get_or_create(group=group)
+            return Response(GroupSMSCreditBalanceSerializer(sms_bal).data)
+        except Group.DoesNotExist:
+            return Response({'error': 'Group not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+    @action(detail=False, methods=['post'], url_path='subscribe-group')
+    def subscribe_group(self, request):
+        from decimal import Decimal
+        config = PlatformFeeConfig.get_config()
+        if not config.is_saas_subscriptions_enabled:
+            return Response({
+                'error': 'Phase 2 Group SaaS Subscriptions are currently disabled in platform settings.'
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        group_id = request.data.get('group_id')
+        tier = request.data.get('tier', 'PRO').upper()
+        if not group_id or tier not in ('PRO', 'ENTERPRISE'):
+            return Response({'error': 'group_id and valid tier (PRO/ENTERPRISE) are required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            group = Group.objects.get(id=group_id)
+        except Group.DoesNotExist:
+            return Response({'error': 'Group not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        price = config.group_pro_monthly_price if tier == 'PRO' else Decimal('500.00')
+        wallet, _ = Wallet.objects.get_or_create(user=request.user, defaults={'external_wallet_id': f"WAAS_{request.user.id}"})
+        if wallet.get_balance() < price:
+            return Response({'error': f'Insufficient wallet balance. R{price} required for Group {tier}.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        from django.db import transaction as db_transaction
+        from django.utils import timezone
+        import datetime
+        with db_transaction.atomic():
+            tx = Transaction.objects.create(
+                wallet=wallet,
+                transaction_type='SMS_PACKAGE_PURCHASE',
+                amount=price,
+                fee_amount=Decimal('0.00'),
+                net_amount=price,
+                status='COMPLETED',
+                destination_group=group,
+                note=f"Group {tier} SaaS Subscription"
+            )
+            wallet.recalculate_balance()
+
+            sub, _ = GroupSubscription.objects.get_or_create(group=group)
+            sub.tier = tier
+            sub.is_active = True
+            sub.monthly_price = price
+            sub.expires_at = timezone.now() + datetime.timedelta(days=30)
+            sub.save()
+
+            PlatformFeeLedger.objects.create(
+                transaction=tx,
+                fee_type='GROUP_SAAS_FEE',
+                gross_amount=price,
+                fee_amount=price,
+                net_amount=Decimal('0.00')
+            )
+
+        return Response({
+            'status': 'success',
+            'subscription': GroupSubscriptionSerializer(sub).data
+        })
+
+    @action(detail=False, methods=['post'], url_path='subscribe-user')
+    def subscribe_user(self, request):
+        from decimal import Decimal
+        config = PlatformFeeConfig.get_config()
+        if not config.is_saas_subscriptions_enabled:
+            return Response({
+                'error': 'Phase 2 Komunity Plus Subscriptions are currently disabled in platform settings.'
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        price = config.komunity_plus_monthly_price
+        wallet, _ = Wallet.objects.get_or_create(user=request.user, defaults={'external_wallet_id': f"WAAS_{request.user.id}"})
+        if wallet.get_balance() < price:
+            return Response({'error': f'Insufficient wallet balance. R{price} required for Komunity Plus.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        from django.db import transaction as db_transaction
+        from django.utils import timezone
+        import datetime
+        with db_transaction.atomic():
+            tx = Transaction.objects.create(
+                wallet=wallet,
+                transaction_type='SMS_PACKAGE_PURCHASE',
+                amount=price,
+                fee_amount=Decimal('0.00'),
+                net_amount=price,
+                status='COMPLETED',
+                note="Komunity Plus Member Subscription"
+            )
+            wallet.recalculate_balance()
+
+            sub, _ = UserSubscription.objects.get_or_create(user=request.user)
+            sub.is_active = True
+            sub.expires_at = timezone.now() + datetime.timedelta(days=30)
+            sub.save()
+
+            PlatformFeeLedger.objects.create(
+                transaction=tx,
+                fee_type='KOMUNITY_PLUS_FEE',
+                gross_amount=price,
+                fee_amount=price,
+                net_amount=Decimal('0.00')
+            )
+
+        return Response({
+            'status': 'success',
+            'subscription': UserSubscriptionSerializer(sub).data
+        })
+
+    @action(detail=False, methods=['get'], url_path='vendors')
+    def vendors(self, request):
+        config = PlatformFeeConfig.get_config()
+        if not config.is_vendor_marketplace_enabled:
+            return Response({
+                'error': 'Phase 3 Vendor Marketplace is currently disabled in platform settings.'
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        if not ServiceVendor.objects.exists():
+            ServiceVendor.objects.bulk_create([
+                ServiceVendor(name="Dignity Funeral Services", category="FUNERAL_PARLOR", contact_phone="0115550199", contact_email="contact@dignity.co.za", rating=4.90),
+                ServiceVendor(name="Ubuntu Event Catering", category="CATERING", contact_phone="0115550288", contact_email="info@ubuntucatering.co.za", rating=4.85),
+                ServiceVendor(name="Harmony Grief Support & Counseling", category="COUNSELING", contact_phone="0115550377", contact_email="help@harmonygrief.org", rating=5.00),
+            ])
+
+        vendors = ServiceVendor.objects.filter(is_active=True)
+        serializer = ServiceVendorSerializer(vendors, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['post'], url_path='book-vendor')
+    def book_vendor(self, request):
+        from decimal import Decimal
+        config = PlatformFeeConfig.get_config()
+        if not config.is_vendor_marketplace_enabled:
+            return Response({
+                'error': 'Phase 3 Vendor Marketplace is currently disabled in platform settings.'
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        vendor_id = request.data.get('vendor_id')
+        amount = request.data.get('amount')
+        description = request.data.get('description', 'Service Booking')
+        group_id = request.data.get('group_id')
+
+        if not vendor_id or not amount:
+            return Response({'error': 'vendor_id and amount are required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            vendor = ServiceVendor.objects.get(id=vendor_id, is_active=True)
+            amt = Decimal(str(amount))
+        except (ServiceVendor.DoesNotExist, Exception):
+            return Response({'error': 'Invalid vendor or amount.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        commission_pct = config.vendor_commission_percentage / Decimal('100.00')
+        commission = (amt * commission_pct).quantize(Decimal('0.01'))
+
+        wallet, _ = Wallet.objects.get_or_create(user=request.user, defaults={'external_wallet_id': f"WAAS_{request.user.id}"})
+        if wallet.get_balance() < amt:
+            return Response({'error': f'Insufficient wallet balance. R{amt} required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        from django.db import transaction as db_transaction
+        with db_transaction.atomic():
+            tx = Transaction.objects.create(
+                wallet=wallet,
+                transaction_type='TRANSFER',
+                amount=amt,
+                fee_amount=commission,
+                net_amount=amt - commission,
+                status='COMPLETED',
+                note=f"Vendor Booking: {vendor.name}"
+            )
+            wallet.recalculate_balance()
+
+            booking = VendorBooking.objects.create(
+                vendor=vendor,
+                group_id=group_id,
+                user=request.user,
+                service_description=description,
+                booking_amount=amt,
+                commission_amount=commission,
+                status='CONFIRMED',
+                transaction=tx
+            )
+
+            if commission > 0:
+                PlatformFeeLedger.objects.create(
+                    transaction=tx,
+                    fee_type='VENDOR_COMMISSION_FEE',
+                    gross_amount=amt,
+                    fee_amount=commission,
+                    net_amount=amt - commission
+                )
+
+        return Response({
+            'status': 'success',
+            'booking': VendorBookingSerializer(booking).data
+        })
+
+    @action(detail=False, methods=['get'], url_path='insurance-policies')
+    def insurance_policies(self, request):
+        from decimal import Decimal
+        config = PlatformFeeConfig.get_config()
+        if not config.is_vendor_marketplace_enabled:
+            return Response({
+                'error': 'Phase 3 Micro-Insurance Offerings are currently disabled in platform settings.'
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        if not MicroInsurancePolicy.objects.exists():
+            MicroInsurancePolicy.objects.bulk_create([
+                MicroInsurancePolicy(provider_name="Old Mutual / Sanlam Partner", policy_name="Group Funeral Assurance", cover_amount=Decimal('15000.00'), monthly_premium=Decimal('18.00')),
+                MicroInsurancePolicy(provider_name="Hollard Partner", policy_name="Emergency Excess Cover", cover_amount=Decimal('5000.00'), monthly_premium=Decimal('12.00')),
+            ])
+
+        policies = MicroInsurancePolicy.objects.filter(is_active=True)
+        serializer = MicroInsurancePolicySerializer(policies, many=True)
+        return Response(serializer.data)
 
     @action(detail=False, methods=['get'], url_path='lookup-recipient')
     def lookup_recipient(self, request):
@@ -1318,6 +1839,7 @@ class WalletViewSet(viewsets.ModelViewSet):
             transaction.amount = amount_val
             transaction.waas_reference_id = str(flw_response.get('waas_ref', tx_ref))
             transaction.save()
+            _apply_platform_fee(transaction, 'TOP_UP')
             wallet.recalculate_balance()
             return Response({
                 'status': 'success',
@@ -1370,14 +1892,27 @@ class WalletViewSet(viewsets.ModelViewSet):
         if api_response['success']:
             transaction.status = 'COMPLETED'
             transaction.waas_reference_id = api_response['waas_ref']
+            # Persist any extra data (e.g. voucher_code) into withdrawal_metadata
+            updated_metadata = {**metadata, 'currency': currency}
+            if api_response.get('voucher_code'):
+                updated_metadata['voucher_code'] = api_response['voucher_code']
+            if api_response.get('partner'):
+                updated_metadata['partner'] = api_response['partner']
+            transaction.withdrawal_metadata = updated_metadata
             transaction.save()
+            _apply_platform_fee(transaction, 'WITHDRAWAL')
             wallet.recalculate_balance()
 
-            return Response({
+            response_data = {
                 'status': 'success',
                 'balance': wallet.get_balance(),
                 'transaction': TransactionSerializer(transaction).data
-            })
+            }
+            # Include voucher code in top-level response so frontend can display it
+            if api_response.get('voucher_code'):
+                response_data['voucher_code'] = api_response['voucher_code']
+                response_data['partner'] = api_response.get('partner', '')
+            return Response(response_data)
         else:
             transaction.status = 'FAILED'
             transaction.save()
@@ -1734,7 +2269,19 @@ class FundCampaignViewSet(viewsets.ModelViewSet):
         is_public = (campaign_type == 'emergency')
         if campaign_type == 'custom' and organisation and organisation.is_verified:
             is_public = True
-        serializer.save(created_by=self.request.user.profile, is_public=is_public)
+        
+        campaign = serializer.save(created_by=self.request.user.profile, is_public=is_public)
+        
+        # If group-linked and preference is active, notify members
+        if campaign.group and campaign.group.notify_on_campaign_created:
+            for active_mem in campaign.group.groupmembership_set.filter(status='active').exclude(member=self.request.user.profile):
+                send_push_notification(
+                    user=active_mem.member.user,
+                    title="New Fund Campaign Launched",
+                    message=f"A new campaign '{campaign.title}' has been launched in {campaign.group.name}.",
+                    notification_type="campaign_created",
+                    data={'group_id': campaign.group.id, 'campaign_id': campaign.id}
+                )
 
     # ── Public fundraisers list (no auth filter) ─────────────────────────────
     @action(detail=False, methods=['get'], permission_classes=[permissions.AllowAny])
@@ -1893,7 +2440,10 @@ class FundCampaignViewSet(viewsets.ModelViewSet):
     # ── Disburse/Withdraw funds (partial or full) ──────────────────────────────
     @action(detail=True, methods=['post'])
     def disburse(self, request, pk=None):
-        """Transfer funds from the campaign balance (admin only). Supports partial withdrawals."""
+        """Transfer funds from the campaign balance (admin only). Supports partial withdrawals.
+        If the group requires multi-admin approval (min_disbursement_approvals > 1),
+        a GroupWalletTransferRequest is created instead of executing immediately.
+        """
         campaign = self.get_object()
         is_admin = campaign.group.is_admin(request.user) if campaign.group else campaign.organisation.is_admin(request.user)
         if not is_admin:
@@ -1929,6 +2479,41 @@ class FundCampaignViewSet(viewsets.ModelViewSet):
 
         note = request.data.get('note', '')
 
+        # ── Multi-admin approval path (group only) ──────────────────────────────
+        if campaign.group and (campaign.group.min_disbursement_approvals > 1 or campaign.group.get_admin_count() > 1):
+            from wallet.models import GroupWalletTransferRequest
+            from wallet.serializers import GroupWalletTransferRequestSerializer
+
+            transfer_request = GroupWalletTransferRequest.objects.create(
+                group=campaign.group,
+                requested_by=request.user,
+                recipient_profile=recipient_profile,
+                amount=withdraw_amount,
+                fund_campaign=campaign,
+                note=note or f"Disbursement from campaign: {campaign.title}",
+            )
+            # Requester counts as first approver
+            transfer_request.approvals.add(request.user)
+            transfer_request.save()
+
+            # Auto-execute if threshold already met (e.g. group has exactly 1 admin and changed setting back)
+            if transfer_request.can_execute():
+                try:
+                    transfer_request.execute()
+                except Exception as exc:
+                    return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+                serializer = GroupWalletTransferRequestSerializer(transfer_request, context={'request': request})
+                return Response({'status': 'executed', 'request': serializer.data})
+
+            serializer = GroupWalletTransferRequestSerializer(transfer_request, context={'request': request})
+            return Response({
+                'status': 'pending_approval',
+                'approvals_given': transfer_request.approvals.count(),
+                'approvals_needed': transfer_request.required_approvals,
+                'request': serializer.data,
+            }, status=status.HTTP_202_ACCEPTED)
+
+        # ── Direct disbursement path (org campaigns or single-admin groups) ───────
         from wallet.models import Wallet, Transaction as WalletTransaction
         from django.db import transaction as db_transaction
 
@@ -1951,7 +2536,7 @@ class FundCampaignViewSet(viewsets.ModelViewSet):
                 waas_reference_id=f"CAMP_{timezone.now().timestamp()}"
             )
             recipient_wallet.recalculate_balance()
-            
+
             # Check remaining balance
             remaining_balance = campaign.get_balance()
             close_campaign = request.data.get('close_campaign', False)
@@ -1966,6 +2551,17 @@ class FundCampaignViewSet(viewsets.ModelViewSet):
             notification_type="campaign_disbursed",
             data={'amount': str(withdraw_amount), 'campaign_id': campaign.id}
         )
+
+        # If linked to a group and preference is active, notify other members
+        if campaign.group and campaign.group.notify_on_wallet_transfer:
+            for active_mem in campaign.group.groupmembership_set.filter(status='active').exclude(member=recipient_profile):
+                send_push_notification(
+                    user=active_mem.member.user,
+                    title="Group Wallet Disbursement",
+                    message=f"R {withdraw_amount} has been disbursed from campaign '{campaign.title}' to {recipient_profile.full_name}.",
+                    notification_type="campaign_disbursed_group",
+                    data={'group_id': campaign.group.id}
+                )
 
         return Response({
             'status': 'success',

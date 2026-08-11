@@ -28,6 +28,16 @@ class Group(models.Model):
     max_members = models.PositiveIntegerField(null=True, blank=True, help_text="Leave blank for unlimited")
     requires_approval = models.BooleanField(default=False, help_text="New members need approval")
     
+    # Notification & Governance Settings
+    notify_on_member_join = models.BooleanField(default=True, help_text="Notify all members when a new member joins")
+    notify_on_member_promote = models.BooleanField(default=True, help_text="Notify all members when a member is promoted to admin")
+    notify_on_wallet_transfer = models.BooleanField(default=True, help_text="Notify all members when a transfer is made from the group wallet")
+    notify_on_campaign_created = models.BooleanField(default=True, help_text="Notify all members when a new campaign is launched")
+    min_disbursement_approvals = models.PositiveSmallIntegerField(
+        default=1,
+        help_text="Minimum number of admin approvals required before a disbursement/transfer executes (1 = any admin can disburse immediately)"
+    )
+    
     # Ownership
     creator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='created_groups',null=True, blank=True)
     admins  = models.ManyToManyField(settings.AUTH_USER_MODEL, related_name='admin_groups', blank=True)
@@ -125,6 +135,18 @@ class Group(models.Model):
             status='active',
             is_active=True
         ).exists()
+
+    def get_admin_count(self):
+        """Returns the number of active admins in this group."""
+        admin_user_ids = set()
+        if self.creator_id:
+            admin_user_ids.add(self.creator_id)
+        admin_user_ids.update(self.admins.values_list('id', flat=True))
+        admin_user_ids.update(
+            self.groupmembership_set.filter(role='admin', status='active', is_active=True)
+            .values_list('member__user_id', flat=True)
+        )
+        return max(1, len(admin_user_ids))
 
 
     def can_join(self, user):

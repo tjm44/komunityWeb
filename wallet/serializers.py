@@ -1,5 +1,11 @@
 from rest_framework import serializers
-from .models import Wallet, Transaction, GroupWalletTransferRequest
+from .models import (
+    Wallet, Transaction, GroupWalletTransferRequest,
+    PlatformFeeConfig, PlatformFeeLedger,
+    SMSCreditPackage, GroupSMSCreditBalance, SMSCreditPurchase,
+    GroupSubscription, UserSubscription, ServiceVendor, VendorBooking,
+    MicroInsurancePolicy, InsurancePolicyEnrollment
+)
 from chema.serializers import GroupSerializer
 from user.serializers import ProfileSerializer
 
@@ -7,7 +13,11 @@ class GroupWalletTransferRequestSerializer(serializers.ModelSerializer):
     group_detail = GroupSerializer(source='group', read_only=True)
     requested_by_detail = serializers.SerializerMethodField()
     recipient_profile_detail = ProfileSerializer(source='recipient_profile', read_only=True)
+    # alias used by older frontend code
+    recipient_detail = ProfileSerializer(source='recipient_profile', read_only=True)
     approvals_count = serializers.SerializerMethodField()
+    approvals_needed = serializers.SerializerMethodField()
+    approver_names = serializers.SerializerMethodField()
     current_user_has_approved = serializers.SerializerMethodField()
     can_execute = serializers.SerializerMethodField()
 
@@ -15,12 +25,17 @@ class GroupWalletTransferRequestSerializer(serializers.ModelSerializer):
         model = GroupWalletTransferRequest
         fields = [
             'id', 'group', 'group_detail', 'requested_by', 'requested_by_detail',
-            'recipient_profile', 'recipient_profile_detail', 'amount', 'status',
-            'approvals_count', 'current_user_has_approved', 'can_execute',
+            'recipient_profile', 'recipient_profile_detail', 'recipient_detail',
+            'amount', 'status', 'note',
+            'approvals_count', 'approvals_needed', 'approver_names',
+            'current_user_has_approved', 'can_execute',
             'deceased_contribution', 'fund_campaign',
-            'created_at', 'updated_at', 'executed_at'
+            'created_at', 'updated_at', 'executed_at',
         ]
-        read_only_fields = ['status', 'approvals_count', 'current_user_has_approved', 'created_at', 'updated_at', 'executed_at']
+        read_only_fields = [
+            'status', 'approvals_count', 'approvals_needed', 'approver_names',
+            'current_user_has_approved', 'created_at', 'updated_at', 'executed_at',
+        ]
 
     def get_requested_by_detail(self, obj):
         if obj.requested_by:
@@ -35,6 +50,16 @@ class GroupWalletTransferRequestSerializer(serializers.ModelSerializer):
 
     def get_approvals_count(self, obj):
         return obj.approvals.count()
+
+    def get_approvals_needed(self, obj):
+        return obj.required_approvals
+
+    def get_approver_names(self, obj):
+        names = []
+        for user in obj.approvals.all().select_related('profile'):
+            profile = getattr(user, 'profile', None)
+            names.append(profile.full_name if profile else user.email)
+        return names
 
     def get_current_user_has_approved(self, obj):
         request = self.context.get('request')
@@ -61,7 +86,7 @@ class TransactionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Transaction
         fields = [
-            'id', 'wallet', 'transaction_type', 'amount', 'status', 'note',
+            'id', 'wallet', 'transaction_type', 'amount', 'fee_amount', 'net_amount', 'status', 'note',
             'withdrawal_channel', 'withdrawal_metadata',
             'destination_group', 'destination_group_detail', 
             'recipient_wallet', 'recipient_wallet_detail',
@@ -125,7 +150,15 @@ class TransactionSerializer(serializers.ModelSerializer):
         if t == 'CONTRIBUTION':
             target = None
             if obj.fund_campaign:
-                target = obj.fund_campaign.title
+                parent = ""
+                if obj.fund_campaign.group:
+                    parent = obj.fund_campaign.group.name
+                elif obj.fund_campaign.organisation:
+                    parent = obj.fund_campaign.organisation.name
+                if parent:
+                    target = f"{parent} - {obj.fund_campaign.title}"
+                else:
+                    target = obj.fund_campaign.title
             elif obj.deceased_contribution:
                 try:
                     target = obj.deceased_contribution.deceased.full_name
@@ -135,7 +168,15 @@ class TransactionSerializer(serializers.ModelSerializer):
         if t == 'TRANSFER':
             target = None
             if obj.fund_campaign:
-                target = obj.fund_campaign.title
+                parent = ""
+                if obj.fund_campaign.group:
+                    parent = obj.fund_campaign.group.name
+                elif obj.fund_campaign.organisation:
+                    parent = obj.fund_campaign.organisation.name
+                if parent:
+                    target = f"{parent} - {obj.fund_campaign.title}"
+                else:
+                    target = obj.fund_campaign.title
             elif obj.deceased_contribution:
                 try:
                     target = obj.deceased_contribution.deceased.full_name
@@ -162,7 +203,15 @@ class TransactionSerializer(serializers.ModelSerializer):
         if t == 'PAYOUT_RECEIVED':
             src = None
             if obj.fund_campaign:
-                src = obj.fund_campaign.title
+                parent = ""
+                if obj.fund_campaign.group:
+                    parent = obj.fund_campaign.group.name
+                elif obj.fund_campaign.organisation:
+                    parent = obj.fund_campaign.organisation.name
+                if parent:
+                    src = f"{parent} - {obj.fund_campaign.title}"
+                else:
+                    src = obj.fund_campaign.title
             elif obj.destination_group:
                 src = obj.destination_group.name
             return f"Payout from {src}" if src else "Payout Received"
@@ -219,3 +268,90 @@ class WalletSerializer(serializers.ModelSerializer):
     def get_recent_transactions(self, obj):
         transactions = obj.transactions.all().order_by('-timestamp')[:5]
         return TransactionSerializer(transactions, many=True).data
+
+
+class PlatformFeeConfigSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PlatformFeeConfig
+        fields = [
+            'is_fees_enabled',
+            'topup_percentage_fee', 'topup_flat_fee',
+            'withdrawal_percentage_fee', 'withdrawal_flat_fee',
+            'group_transfer_percentage_fee', 'group_transfer_flat_fee',
+            # Phase 2
+            'is_saas_subscriptions_enabled',
+            'group_pro_monthly_price', 'komunity_plus_monthly_price',
+            # Phase 3
+            'is_vendor_marketplace_enabled',
+            'vendor_commission_percentage',
+            'updated_at'
+        ]
+
+
+class SMSCreditPackageSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SMSCreditPackage
+        fields = ['id', 'name', 'credits_count', 'price', 'is_active', 'created_at']
+
+
+class GroupSMSCreditBalanceSerializer(serializers.ModelSerializer):
+    group_id = serializers.IntegerField(source='group.id', read_only=True)
+    group_name = serializers.CharField(source='group.name', read_only=True)
+
+    class Meta:
+        model = GroupSMSCreditBalance
+        fields = ['group_id', 'group_name', 'balance', 'updated_at']
+
+
+class SMSCreditPurchaseSerializer(serializers.ModelSerializer):
+    package_detail = SMSCreditPackageSerializer(source='package', read_only=True)
+
+    class Meta:
+        model = SMSCreditPurchase
+        fields = ['id', 'group', 'package', 'package_detail', 'credits_added', 'amount_paid', 'created_at']
+
+
+class GroupSubscriptionSerializer(serializers.ModelSerializer):
+    tier_display = serializers.CharField(source='get_tier_display', read_only=True)
+
+    class Meta:
+        model = GroupSubscription
+        fields = ['id', 'group', 'tier', 'tier_display', 'is_active', 'monthly_price', 'expires_at', 'created_at']
+
+
+class UserSubscriptionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = UserSubscription
+        fields = ['id', 'user', 'is_active', 'badge_label', 'expires_at', 'created_at']
+
+
+class ServiceVendorSerializer(serializers.ModelSerializer):
+    category_display = serializers.CharField(source='get_category_display', read_only=True)
+
+    class Meta:
+        model = ServiceVendor
+        fields = ['id', 'name', 'category', 'category_display', 'description', 'contact_phone', 'contact_email', 'rating', 'is_verified', 'is_active']
+
+
+class VendorBookingSerializer(serializers.ModelSerializer):
+    vendor_detail = ServiceVendorSerializer(source='vendor', read_only=True)
+
+    class Meta:
+        model = VendorBooking
+        fields = ['id', 'vendor', 'vendor_detail', 'group', 'user', 'service_description', 'booking_amount', 'commission_amount', 'status', 'created_at']
+
+
+class MicroInsurancePolicySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MicroInsurancePolicy
+        fields = ['id', 'provider_name', 'policy_name', 'cover_amount', 'monthly_premium', 'is_active']
+
+
+class InsurancePolicyEnrollmentSerializer(serializers.ModelSerializer):
+    policy_detail = MicroInsurancePolicySerializer(source='policy', read_only=True)
+
+    class Meta:
+        model = InsurancePolicyEnrollment
+        fields = ['id', 'policy', 'policy_detail', 'group', 'enrolled_by', 'enrolled_members_count', 'is_active', 'created_at']
+
+
