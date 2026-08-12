@@ -99,6 +99,10 @@ class TransactionSerializer(serializers.ModelSerializer):
             'description', 'from_label', 'to_label',
         ]
     
+    def get_withdrawal_metadata(self, obj):
+        from wallet.encryption import mask_metadata
+        return mask_metadata(obj.withdrawal_metadata)
+
     def _profile_mini(self, user):
         """Return a compact name dict for a user."""
         if not user:

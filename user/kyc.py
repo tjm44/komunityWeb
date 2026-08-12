@@ -30,8 +30,9 @@ class FlutterwaveKYCProvider:
             return True, res.get('message', 'Identity verified successfully.')
         
         # If sandbox mode returns endpoint unavailable or invalid mock ID in dev, fallback gracefully for valid formatted IDs
+        from django.conf import settings
         error_msg = res.get('error', '')
-        if "404" in error_msg or "not found" in error_msg.lower() or "sandbox" in error_msg.lower():
+        if getattr(settings, 'DEBUG', False) and ("404" in error_msg or "not found" in error_msg.lower() or "sandbox" in error_msg.lower()):
             logger.info("[KYC] Sandbox fallback triggered for valid ID format.")
             return True, "Identity verified successfully (Sandbox Mode)."
 

@@ -20,11 +20,16 @@ def flutterwave_webhook(request):
     """
     secret_hash = getattr(settings, 'FLW_WEBHOOK_SECRET_HASH', None)
     signature = request.headers.get('verif-hash') or request.headers.get('Verif-Hash')
+    bypass_dev = getattr(settings, 'DEBUG', False) and request.headers.get('X-Bypass-Webhook-Dev') == 'true'
 
-    # Security check: Validate signature header if secret hash is configured
-    if secret_hash and signature != secret_hash:
-        logger.warning("Flutterwave Webhook: Invalid secret hash signature.")
-        return HttpResponse(status=401)
+    # Security check: Validate signature header
+    if not bypass_dev:
+        if not secret_hash:
+            logger.error("Flutterwave Webhook: FLW_WEBHOOK_SECRET_HASH is not configured.")
+            return HttpResponse(status=401)
+        if signature != secret_hash:
+            logger.warning("Flutterwave Webhook: Invalid secret hash signature.")
+            return HttpResponse(status=401)
 
     try:
         payload = json.loads(request.body.decode('utf-8'))

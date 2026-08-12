@@ -19,6 +19,32 @@ class StandardPagination(PageNumberPagination):
     max_page_size = 50
 
 
+# -------------------------------------------------------------------------
+# Custom throttle classes — scoped rates for OTP and PIN auth endpoints.
+# Inheriting ScopedRateThrottle lets each view declare its own named scope.
+# -------------------------------------------------------------------------
+from rest_framework.throttling import AnonRateThrottle
+
+
+class OTPRequestThrottle(AnonRateThrottle):
+    """Max 5 OTP SMS requests per hour per IP — prevents SMS-flood attacks."""
+    scope = 'otp_request'
+
+
+class OTPVerifyThrottle(AnonRateThrottle):
+    """Max 10 OTP verification attempts per hour per IP — prevents brute-force."""
+    scope = 'otp_verify'
+
+
+class PINVerifyThrottle(AnonRateThrottle):
+    """Max 10 PIN verification attempts per hour per IP — prevents PIN brute-force."""
+    scope = 'pin_verify'
+
+
+# Maximum number of OTP verification failures before the record is locked.
+MAX_OTP_ATTEMPTS = 5
+
+
 class EmailAuthTokenSerializer(drf_serializers.Serializer):
     """Accepts email + password instead of username + password."""
     email = drf_serializers.EmailField(label='Email')
@@ -109,6 +135,7 @@ class RequestOTPView(APIView):
     Generates a 6-digit OTP, saves it in PhoneOTP with a 10-minute expiry, and dispatches SMS.
     """
     permission_classes = [AllowAny]
+    throttle_classes = [OTPRequestThrottle]
 
     def post(self, request):
         import random
@@ -152,6 +179,7 @@ class VerifyOTPView(APIView):
     Verifies OTP, authenticates or registers CustomUser, and returns Auth token + user info.
     """
     permission_classes = [AllowAny]
+    throttle_classes = [OTPVerifyThrottle]
 
     def post(self, request):
         from django.conf import settings
@@ -177,10 +205,21 @@ class VerifyOTPView(APIView):
             if not otp_record.is_valid():
                 return Response({'error': 'OTP has expired or already been used. Please request a new one.'}, status=status.HTTP_400_BAD_REQUEST)
 
+            # Lock out after too many failed attempts
+            if otp_record.attempts >= MAX_OTP_ATTEMPTS:
+                return Response(
+                    {'error': f'Too many incorrect attempts. Please request a new OTP.'},
+                    status=status.HTTP_429_TOO_MANY_REQUESTS
+                )
+
             if otp_record.otp != otp:
                 otp_record.attempts += 1
                 otp_record.save(update_fields=['attempts'])
-                return Response({'error': 'Invalid OTP code. Please try again.'}, status=status.HTTP_400_BAD_REQUEST)
+                remaining = MAX_OTP_ATTEMPTS - otp_record.attempts
+                return Response(
+                    {'error': f'Invalid OTP code. {remaining} attempt(s) remaining.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
 
             otp_record.is_verified = True
             otp_record.save(update_fields=['is_verified'])
@@ -227,6 +266,7 @@ class VerifyPINView(APIView):
     Verifies 4-digit security PIN and returns Auth token + user info.
     """
     permission_classes = [AllowAny]
+    throttle_classes = [PINVerifyThrottle]
 
     def post(self, request):
         from user.models import CustomUser
@@ -258,10 +298,11 @@ class VerifyPINView(APIView):
 class SetPINView(APIView):
     """
     Endpoint: POST /api/v1/auth/set-pin/
-    Body: {"phone": "+254...", "pin": "1234"}
-    Sets or updates the 4-digit security PIN for the user.
+    Body: {"pin": "1234"}  (phone is optional fallback, ignored when user is authenticated)
+    Sets or updates the 4-digit security PIN for the currently authenticated user.
+    Requires a valid auth token — call this after OTP verification has returned a token.
     """
-    permission_classes = [AllowAny]
+    permission_classes = [permissions.IsAuthenticated]  # Security: token required
 
     def post(self, request):
         from user.models import CustomUser
@@ -272,14 +313,8 @@ class SetPINView(APIView):
         if not pin or len(pin) != 4 or not pin.isdigit():
             return Response({'error': 'PIN must be exactly 4 digits.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        user = None
-        if request.user and request.user.is_authenticated:
-            user = request.user
-        elif phone:
-            user = CustomUser.objects.filter(phone=phone).first()
-
-        if not user:
-            return Response({'error': 'User account not found.'}, status=status.HTTP_400_BAD_REQUEST)
+        # Always use the authenticated user as the primary identity
+        user = request.user
 
         user.set_pin(pin)
 
@@ -1879,13 +1914,16 @@ class WalletViewSet(viewsets.ModelViewSet):
         if channel not in [choice.value for choice in Transaction.TransactionChannel]:
             return Response({'error': 'Unsupported payout channel.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        from wallet.encryption import encrypt_metadata
+        encrypted_meta = encrypt_metadata({**metadata, 'currency': currency})
+
         transaction = Transaction.objects.create(
             wallet=wallet,
             transaction_type='WITHDRAWAL',
             amount=amount_val,
             status='PENDING',
             withdrawal_channel=channel,
-            withdrawal_metadata={**metadata, 'currency': currency}
+            withdrawal_metadata=encrypted_meta
         )
 
         api_response = waas_api_withdraw(wallet.external_wallet_id, channel, metadata, amount_val, currency)
@@ -1898,7 +1936,7 @@ class WalletViewSet(viewsets.ModelViewSet):
                 updated_metadata['voucher_code'] = api_response['voucher_code']
             if api_response.get('partner'):
                 updated_metadata['partner'] = api_response['partner']
-            transaction.withdrawal_metadata = updated_metadata
+            transaction.withdrawal_metadata = encrypt_metadata(updated_metadata)
             transaction.save()
             _apply_platform_fee(transaction, 'WITHDRAWAL')
             wallet.recalculate_balance()

@@ -16,10 +16,13 @@ def send_otp_sms(phone: str, otp: str) -> bool:
     message = f"Your Komunity verification code is: {otp}. Valid for 10 minutes."
 
     # Always log OTP in console/logger for local dev/testing
-    print(f"\n==========================================")
-    print(f"[DEV SMS ENGINE] OTP for {phone}: {otp}")
-    print(f"==========================================\n")
-    logger.info(f"[SMS OTP] Phone: {phone} | OTP: {otp}")
+    if getattr(settings, 'DEBUG', False):
+        print(f"\n==========================================")
+        print(f"[DEV SMS ENGINE] OTP for {phone}: {otp}")
+        print(f"==========================================\n")
+        logger.info(f"[SMS OTP] Phone: {phone} | OTP: {otp}")
+    else:
+        logger.info(f"[SMS OTP] Dispatched OTP code to phone ending in ...{phone[-4:] if len(phone) >= 4 else phone}")
 
     # If BulkSMS credentials are configured, execute HTTP request
     if sms_token or (sms_username and sms_password):

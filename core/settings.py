@@ -266,6 +266,23 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
     ],
+    # ------------------------------------------------------------------
+    # API Throttling — protects OTP/auth endpoints against brute-force
+    # and SMS-flooding attacks.  Rates are intentionally relaxed in DEBUG
+    # so local development is not impeded.
+    # ------------------------------------------------------------------
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '60/min',
+        'user': '200/min',
+        # Custom scopes used on OTP/auth views (see api_v1/views.py)
+        'otp_request': '5/hour',   # stops SMS-flood: max 5 OTP requests per hour per IP
+        'otp_verify':  '10/hour',  # stops OTP brute-force
+        'pin_verify':  '10/hour',  # stops PIN brute-force
+    },
 }
 
 CORS_ALLOWED_ORIGINS = [
@@ -288,4 +305,11 @@ CSRF_COOKIE_HTTPONLY = False
 # Flutterwave Configuration
 FLW_CLIENT_ID = os.environ.get('FLW_CLIENT_ID')
 FLW_CLIENT_SECRET = os.environ.get('FLW_CLIENT_SECRET')
-FLW_ENCRYPTION_KEY = os.environ.get('FLW_ENCRYPTION_KEY')
+FLW_ENCRYPTION_KEY = os.environ.get('FLW_ENCRYPTION_KEY')
+
+# ------------------------------------------------------------------
+# Fernet symmetric encryption (bank account numbers, mobile-money
+# phone numbers stored in withdrawal_metadata)
+# Generate key: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# ------------------------------------------------------------------
+FERNET_KEY = os.environ.get('FERNET_KEY', '')
