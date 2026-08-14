@@ -9,8 +9,9 @@ from .models import (
 
 @admin.register(Wallet)
 class WalletAdmin(admin.ModelAdmin):
-    list_display = ('user', 'external_wallet_id', 'balance', 'created_at')
-    search_fields = ('user__phone', 'external_wallet_id')
+    list_display = ('user', 'external_wallet_id', 'balance', 'is_platform_treasury', 'created_at')
+    list_filter = ('is_platform_treasury', 'created_at')
+    search_fields = ('user__phone', 'user__username', 'user__email', 'external_wallet_id')
     readonly_fields = ('created_at', 'balance')
     
     def balance(self, obj):

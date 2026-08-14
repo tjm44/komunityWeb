@@ -7,19 +7,44 @@ class Wallet(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     external_wallet_id = models.CharField(max_length=100, unique=True)
     balance = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+    is_platform_treasury = models.BooleanField(default=False, help_text="Flag indicating whether this is the Platform System Treasury Wallet")
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
         return f"Wallet for {self.user}"
+
+    @classmethod
+    def get_treasury_wallet(cls):
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        treasury_user, _ = User.objects.get_or_create(
+            email='treasury@komunity.app',
+            defaults={
+                'phone': '+27000000000',
+                'is_staff': True,
+                'is_active': True,
+            }
+        )
+        wallet, _ = cls.objects.get_or_create(
+            user=treasury_user,
+            defaults={
+                'external_wallet_id': 'PLATFORM_TREASURY_WALLET',
+                'is_platform_treasury': True,
+            }
+        )
+        if not wallet.is_platform_treasury:
+            wallet.is_platform_treasury = True
+            wallet.save(update_fields=['is_platform_treasury'])
+        return wallet
 
     def recalculate_balance(self):
         from decimal import Decimal
         from django.db.models import Sum, F, Q, DecimalField
         from django.db.models.functions import Coalesce
         
-        # Calculate Incoming (Top-Ups + Payouts + Received Transfers) using net_amount if present, else amount
+        # Calculate Incoming (Top-Ups + Payouts + Received Transfers + Platform Fee Credits)
         incoming_txs = self.transactions.filter(
-            transaction_type__in=['TOP_UP', 'PAYOUT_RECEIVED', 'P2P_RECEIVED'],
+            transaction_type__in=['TOP_UP', 'PAYOUT_RECEIVED', 'P2P_RECEIVED', 'PLATFORM_FEE_COLLECTED'],
             status='COMPLETED'
         )
         incoming = Decimal('0.00')
@@ -53,6 +78,7 @@ class Transaction(models.Model):
         P2P_SENT = 'P2P_SENT', 'Peer-to-Peer Sent'
         P2P_RECEIVED = 'P2P_RECEIVED', 'Peer-to-Peer Received'
         SMS_PACKAGE_PURCHASE = 'SMS_PACKAGE_PURCHASE', 'SMS Package Purchase'
+        PLATFORM_FEE_COLLECTED = 'PLATFORM_FEE_COLLECTED', 'Platform Fee Revenue'
 
     class TransactionStatus(models.TextChoices):
         PENDING = 'PENDING', 'Pending'
@@ -65,7 +91,7 @@ class Transaction(models.Model):
         VOUCHER = 'voucher', 'Voucher Cash-out'
 
     wallet = models.ForeignKey(Wallet, on_delete=models.PROTECT, related_name="transactions")
-    transaction_type = models.CharField(max_length=20, choices=TransactionType.choices)
+    transaction_type = models.CharField(max_length=35, choices=TransactionType.choices)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     fee_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Platform fee charged on this transaction")
     net_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Net amount after deducting platform fee")
@@ -228,6 +254,18 @@ class GroupWalletTransferRequest(models.Model):
                     fee_amount=fee,
                     net_amount=net
                 )
+                treasury_wallet = Wallet.get_treasury_wallet()
+                Transaction.objects.create(
+                    wallet=treasury_wallet,
+                    transaction_type='PLATFORM_FEE_COLLECTED',
+                    amount=fee,
+                    net_amount=fee,
+                    status='COMPLETED',
+                    sender_wallet=recipient_wallet,
+                    destination_group=self.group,
+                    note=f"Group Transfer Fee from Transaction #{transaction.id}"
+                )
+                treasury_wallet.recalculate_balance()
 
             self.recipient_wallet = recipient_wallet
             self.executed_transaction = transaction

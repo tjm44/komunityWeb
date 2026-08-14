@@ -469,21 +469,48 @@ class ProfileViewSet(viewsets.ModelViewSet):
             
         id_number = request.data.get('id_number')
         id_type = request.data.get('id_type', 'national_id')
+        req_first_name = request.data.get('first_name') or profile.first_name
+        req_surname = request.data.get('surname') or request.data.get('last_name') or profile.surname
         
         from user.kyc import FlutterwaveKYCProvider
-        success, message = FlutterwaveKYCProvider.verify_document(
-            first_name=profile.first_name,
-            surname=profile.surname,
+        kyc_result = FlutterwaveKYCProvider.verify_document(
+            first_name=req_first_name,
+            surname=req_surname,
             id_number=id_number,
             id_type=id_type
         )
         
+        if len(kyc_result) == 3:
+            success, message, verified_data = kyc_result
+        else:
+            success, message = kyc_result[:2]
+            verified_data = {}
+        
         if not success:
             return Response({'error': message}, status=status.HTTP_400_BAD_REQUEST)
             
+        # Update profile name with verified identity details if available
+        v_first_name = (verified_data or {}).get('first_name') or (verified_data or {}).get('firstName') or req_first_name
+        v_surname = (verified_data or {}).get('last_name') or (verified_data or {}).get('lastName') or (verified_data or {}).get('surname') or req_surname
+
+        if v_first_name:
+            profile.first_name = v_first_name
+        if v_surname:
+            profile.surname = v_surname
+
         profile.is_verified = True
+        profile.check_completion()
         profile.save()
-        return Response({'status': 'verified', 'message': message}, status=status.HTTP_200_OK)
+
+        serializer = self.get_serializer(profile)
+        return Response({
+            'status': 'verified',
+            'message': message,
+            'full_name': profile.full_name,
+            'first_name': profile.first_name,
+            'surname': profile.surname,
+            'profile': serializer.data
+        }, status=status.HTTP_200_OK)
 
 class UserViewSet(viewsets.GenericViewSet):
     queryset = CustomUser.objects.all()
@@ -1354,7 +1381,7 @@ class ContributionViewSet(viewsets.ModelViewSet):
 
 def _apply_platform_fee(transaction, fee_type):
     from decimal import Decimal
-    from wallet.models import PlatformFeeConfig, PlatformFeeLedger
+    from wallet.models import PlatformFeeConfig, PlatformFeeLedger, Wallet, Transaction
 
     config = PlatformFeeConfig.get_config()
     gross = Decimal(str(transaction.amount))
@@ -1398,6 +1425,20 @@ def _apply_platform_fee(transaction, fee_type):
             fee_amount=fee,
             net_amount=net
         )
+        treasury_wallet = Wallet.get_treasury_wallet()
+        Transaction.objects.create(
+            wallet=treasury_wallet,
+            transaction_type='PLATFORM_FEE_COLLECTED',
+            amount=fee,
+            net_amount=fee,
+            status='COMPLETED',
+            sender_wallet=transaction.wallet,
+            destination_group=transaction.destination_group,
+            fund_campaign=transaction.fund_campaign,
+            deceased_contribution=transaction.deceased_contribution,
+            note=f"Platform Fee ({ledger_type}) from Transaction #{transaction.id}"
+        )
+        treasury_wallet.recalculate_balance()
 
 
 class WalletViewSet(viewsets.ModelViewSet):
@@ -1410,6 +1451,46 @@ class WalletViewSet(viewsets.ModelViewSet):
     def balance(self, request):
         wallet, _ = Wallet.objects.get_or_create(user=request.user, defaults={'external_wallet_id': f"WAAS_{request.user.id}"})
         return Response({'balance': wallet.get_balance()})
+
+    @action(detail=False, methods=['get'])
+    def treasury(self, request):
+        if not request.user.is_staff and not request.user.is_superuser:
+            return Response({'error': 'Unauthorized. Admin access required.'}, status=status.HTTP_403_FORBIDDEN)
+        
+        treasury_wallet = Wallet.get_treasury_wallet()
+        treasury_balance = treasury_wallet.get_balance()
+        
+        from django.db.models import Sum, Count
+        from wallet.models import PlatformFeeLedger, Transaction
+        
+        total_fees = PlatformFeeLedger.objects.aggregate(total=Sum('fee_amount'))['total'] or 0.00
+        
+        breakdown_query = PlatformFeeLedger.objects.values('fee_type').annotate(
+            total_amount=Sum('fee_amount'),
+            transaction_count=Count('id')
+        )
+        
+        breakdown = {}
+        for item in breakdown_query:
+            breakdown[item['fee_type']] = {
+                'total_amount': float(item['total_amount']),
+                'count': item['transaction_count']
+            }
+            
+        recent_fee_txs = TransactionSerializer(
+            treasury_wallet.transactions.order_by('-timestamp')[:20],
+            many=True,
+            context={'request': request}
+        ).data
+
+        return Response({
+            'treasury_wallet_id': treasury_wallet.id,
+            'external_wallet_id': treasury_wallet.external_wallet_id,
+            'treasury_balance': float(treasury_balance),
+            'total_fees_collected': float(total_fees),
+            'breakdown_by_type': breakdown,
+            'recent_transactions': recent_fee_txs,
+        })
 
     @action(detail=False, methods=['get'], url_path='fee-config')
     def fee_config(self, request):

@@ -267,7 +267,7 @@ class WalletSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Wallet
-        fields = ['id', 'user', 'external_wallet_id', 'balance', 'recent_transactions', 'created_at']
+        fields = ['id', 'user', 'external_wallet_id', 'balance', 'is_platform_treasury', 'recent_transactions', 'created_at']
 
     def get_recent_transactions(self, obj):
         transactions = obj.transactions.all().order_by('-timestamp')[:5]
