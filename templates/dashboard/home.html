@@ -1,0 +1,281 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Overview{% endblock %}
+{% block breadcrumb %}Overview{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Platform Overview</h1>
+    <p class="page-subtitle">Real-time snapshot of Komunity's health and revenue — last updated {{ request.META.HTTP_HOST }}</p>
+  </div>
+  <div class="page-actions">
+    <a href="{% url 'dashboard:finance' %}" class="btn btn-secondary btn-sm">View Finance</a>
+    <a href="{% url 'dashboard:settings' %}" class="btn btn-primary btn-sm">Fee Config</a>
+  </div>
+</div>
+
+<!-- ── KPI Cards ─────────────────────────────────────────── -->
+<div class="kpi-grid">
+  <div class="kpi-card treasury">
+    <div class="kpi-label">Treasury Balance</div>
+    <div class="kpi-value money">{{ treasury_balance|floatformat:2 }}</div>
+    <div class="kpi-sub">Platform wallet earnings</div>
+    <div class="kpi-icon">🏦</div>
+  </div>
+
+  <div class="kpi-card success">
+    <div class="kpi-label">Revenue (30d)</div>
+    <div class="kpi-value money">{{ revenue_30d|floatformat:2 }}</div>
+    <div class="kpi-sub">
+      <span class="kpi-delta up">↑ 7d: R {{ revenue_7d|floatformat:2 }}</span>
+    </div>
+    <div class="kpi-icon">💰</div>
+  </div>
+
+  <div class="kpi-card accent">
+    <div class="kpi-label">Total Users</div>
+    <div class="kpi-value">{{ total_users }}</div>
+    <div class="kpi-sub"><span class="kpi-delta up">+{{ new_users_30d }} this month</span></div>
+    <div class="kpi-icon">👥</div>
+  </div>
+
+  <div class="kpi-card cyan">
+    <div class="kpi-label">Active Groups</div>
+    <div class="kpi-value">{{ total_groups }}</div>
+    <div class="kpi-sub">Fund-pooling communities</div>
+    <div class="kpi-icon">🏘️</div>
+  </div>
+
+  <div class="kpi-card info">
+    <div class="kpi-label">Transactions (30d)</div>
+    <div class="kpi-value">{{ total_transactions_30d }}</div>
+    <div class="kpi-sub">
+      Volume: R {{ total_volume_30d|floatformat:2 }}
+    </div>
+    <div class="kpi-icon">💳</div>
+  </div>
+
+  <div class="kpi-card warning">
+    <div class="kpi-label">Pending Transfers</div>
+    <div class="kpi-value">{{ pending_transfers }}</div>
+    <div class="kpi-sub">
+      {% if pending_transfers %}<a href="{% url 'dashboard:finance' %}?tx_status=PENDING" style="color:var(--warning)">Review now →</a>{% else %}All clear{% endif %}
+    </div>
+    <div class="kpi-icon">⏳</div>
+  </div>
+</div>
+
+<!-- ── Charts ────────────────────────────────────────────── -->
+<div class="charts-grid">
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">📈 Platform Revenue — Last 30 Days</span>
+      <a href="{% url 'dashboard:finance' %}" class="panel-action">All transactions →</a>
+    </div>
+    <div class="panel-body">
+      <div class="chart-container">
+        <canvas id="revenueChart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">💵 Revenue by Fee Type</span>
+    </div>
+    <div class="panel-body">
+      {% if fee_breakdown %}
+        {% with max_fee=fee_breakdown.0.total %}
+        <div class="fee-bar-list">
+          {% for row in fee_breakdown %}
+          <div class="fee-bar-item">
+            <div class="fee-bar-label">
+              <span>{{ row.fee_type|title|cut:"_" }}</span>
+              <span>R {{ row.total|floatformat:2 }}</span>
+            </div>
+            <div class="fee-bar-track">
+              <div class="fee-bar-fill"
+                   style="width: {% widthratio row.total max_fee 100 %}%"></div>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+        {% endwith %}
+      {% else %}
+        <div class="empty-state">
+          <div class="empty-state-icon">📊</div>
+          <div class="empty-state-title">No fee revenue yet</div>
+          <div class="empty-state-desc">Revenue will appear here once transactions complete.</div>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<!-- ── Transaction Volume Chart + TX Type Breakdown ─────── -->
+<div class="charts-grid mb-3">
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">📊 Transaction Volume — Last 30 Days</span>
+    </div>
+    <div class="panel-body">
+      <div class="chart-container">
+        <canvas id="txVolumeChart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">🔀 Transaction Mix (30d)</span>
+    </div>
+    <div class="panel-body">
+      {% if tx_type_breakdown %}
+        <div class="table-wrap">
+          <table class="dash-table">
+            <thead>
+              <tr>
+                <th>Type</th>
+                <th>Count</th>
+                <th>Volume</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in tx_type_breakdown %}
+              <tr>
+                <td><span class="badge badge-accent">{{ row.transaction_type }}</span></td>
+                <td>{{ row.count }}</td>
+                <td class="money">{{ row.total|floatformat:2 }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <div class="empty-state">
+          <div class="empty-state-icon">💸</div>
+          <div class="empty-state-title">No transactions yet</div>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<!-- ── Recent Activity ────────────────────────────────────── -->
+<div class="charts-grid">
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">⚡ Recent Transactions</span>
+      <a href="{% url 'dashboard:finance' %}" class="panel-action">View all →</a>
+    </div>
+    <div class="panel-body" style="padding: 0 20px;">
+      <div class="activity-feed">
+        {% for tx in recent_transactions %}
+        <div class="activity-item">
+          <div class="activity-dot {% if tx.status == 'COMPLETED' %}green{% elif tx.status == 'PENDING' %}yellow{% else %}red{% endif %}"></div>
+          <div class="activity-content">
+            <div class="activity-title">
+              <strong>{{ tx.transaction_type|title }}</strong>
+              {% if tx.wallet.user.profile.first_name %}
+                — {{ tx.wallet.user.profile.first_name }} {{ tx.wallet.user.profile.surname }}
+              {% else %}
+                — {{ tx.wallet.user.phone }}
+              {% endif %}
+            </div>
+            <div class="activity-time">{{ tx.timestamp|timesince }} ago · {{ tx.status }}</div>
+          </div>
+          <div class="activity-amount">R {{ tx.amount|floatformat:2 }}</div>
+        </div>
+        {% empty %}
+          <div class="empty-state"><div class="empty-state-title">No transactions yet</div></div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">🆕 New Users</span>
+      <a href="{% url 'dashboard:users' %}" class="panel-action">View all →</a>
+    </div>
+    <div class="panel-body" style="padding: 0 20px;">
+      <div class="activity-feed">
+        {% for u in recent_users %}
+        <div class="activity-item">
+          <div class="user-avatar-sm">{{ u.profile.first_name|default:u.phone|default:"U"|slice:":1"|upper }}</div>
+          <div class="activity-content">
+            <div class="activity-title">
+              <strong>{% if u.profile.first_name %}{{ u.profile.first_name }} {{ u.profile.surname }}{% else %}{{ u.phone }}{% endif %}</strong>
+            </div>
+            <div class="activity-time">Joined {{ u.date_joined|timesince }} ago
+              {% if u.profile.is_verified %}<span class="badge badge-success" style="margin-left:6px;">✓ Verified</span>{% endif %}
+            </div>
+          </div>
+          <a href="{% url 'dashboard:user_detail' u.pk %}" class="btn btn-secondary btn-xs">View</a>
+        </div>
+        {% empty %}
+          <div class="empty-state"><div class="empty-state-title">No users yet</div></div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Revenue Chart
+const revCtx = document.getElementById('revenueChart').getContext('2d');
+new Chart(revCtx, {
+  type: 'bar',
+  data: {
+    labels: {{ rev_labels|safe }},
+    datasets: [{
+      label: 'Fee Revenue (R)',
+      data: {{ rev_values|safe }},
+      backgroundColor: 'rgba(124,58,237,0.5)',
+      borderColor: '#7c3aed',
+      borderWidth: 2,
+      borderRadius: 6,
+      borderSkipped: false,
+    }]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.05)' } },
+      x: { grid: { display: false } }
+    }
+  }
+});
+
+// Transaction Volume Chart
+const txCtx = document.getElementById('txVolumeChart').getContext('2d');
+new Chart(txCtx, {
+  type: 'line',
+  data: {
+    labels: {{ tx_labels|safe }},
+    datasets: [{
+      label: 'Transactions',
+      data: {{ tx_values|safe }},
+      borderColor: '#06b6d4',
+      backgroundColor: 'rgba(6,182,212,0.1)',
+      borderWidth: 2.5,
+      fill: true,
+      tension: 0.4,
+      pointBackgroundColor: '#06b6d4',
+      pointRadius: 3,
+    }]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.05)' } },
+      x: { grid: { display: false } }
+    }
+  }
+});
+</script>
+{% endblock %}

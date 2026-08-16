@@ -11,6 +11,7 @@ urlpatterns = [
     path('accounts/', include('allauth.urls')),
     path('', include('wallet.urls')),
     path('api/v1/', include('api_v1.urls')),
+    path('dashboard/', include('dashboard.urls')),
 ]
 
 if settings.DEBUG:

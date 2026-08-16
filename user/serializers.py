@@ -61,9 +61,16 @@ class SignupSerializer(serializers.ModelSerializer):
         user.save()
         return user
 
-from .models import DeviceToken
+from .models import DeviceToken, Notification
 
 class DeviceTokenSerializer(serializers.ModelSerializer):
     class Meta:
         model = DeviceToken
         fields = ['token', 'platform']
+
+class NotificationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Notification
+        fields = ['id', 'recipient', 'title', 'message', 'data', 'is_read', 'created_at', 'notification_type']
+        read_only_fields = ['id', 'recipient', 'created_at']
+

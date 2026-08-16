@@ -1,0 +1,147 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Campaigns{% endblock %}
+{% block breadcrumb %}Campaigns{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Campaigns & Fundraisers</h1>
+    <p class="page-subtitle">{{ total }} campaigns · manage fund collections and disbursements</p>
+  </div>
+</div>
+
+<form method="get" class="search-bar">
+  <div class="search-input-wrap">
+    <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+    </svg>
+    <input type="text" name="q" class="form-control" placeholder="Search campaigns…" value="{{ q }}">
+  </div>
+  <select name="campaign_type" class="form-control" style="width:auto;min-width:160px;">
+    <option value="">All Types</option>
+    {% for val, label in campaign_type_choices %}
+      <option value="{{ val }}" {% if campaign_type == val %}selected{% endif %}>{{ label }}</option>
+    {% endfor %}
+  </select>
+  <button type="submit" class="btn btn-primary btn-sm">Filter</button>
+  {% if q or campaign_type %}<a href="{% url 'dashboard:campaigns' %}" class="btn btn-secondary btn-sm">Clear</a>{% endif %}
+</form>
+
+<!-- ── Fund Campaigns ────────────────────────────────────── -->
+<div class="panel mb-3">
+  <div class="panel-header"><span class="panel-title">📢 Fund Campaigns ({{ total }})</span></div>
+  <div class="table-wrap">
+    <table class="dash-table">
+      <thead>
+        <tr>
+          <th>Title</th>
+          <th>Group</th>
+          <th>Type</th>
+          <th>Raised</th>
+          <th>Contributors</th>
+          <th>Status</th>
+          <th>Public</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in campaigns %}
+        <tr>
+          <td>
+            <div class="user-cell-name">{{ c.title }}</div>
+            {% if c.deadline %}<div class="user-cell-sub text-small">Deadline: {{ c.deadline }}</div>{% endif %}
+          </td>
+          <td class="text-muted text-small">
+            {% if c.group %}<a href="{% url 'dashboard:group_detail' c.group.pk %}">{{ c.group.name }}</a>{% else %}—{% endif %}
+          </td>
+          <td><span class="badge badge-accent">{{ c.campaign_type }}</span></td>
+          <td class="money">{{ c.raised|floatformat:2 }}</td>
+          <td>{{ c.contributor_count }}</td>
+          <td>
+            {% if c.contributions_open %}<span class="badge badge-success">Open</span>{% else %}<span class="badge badge-muted">Closed</span>{% endif %}
+            {% if c.funds_disbursed %}<span class="badge badge-cyan" style="margin-left:4px;">Disbursed</span>{% endif %}
+          </td>
+          <td>{% if c.is_public %}<span class="badge badge-info">Public</span>{% else %}<span class="badge badge-muted">Private</span>{% endif %}</td>
+          <td>
+            <form method="post" style="display:flex;gap:5px;flex-wrap:wrap;">
+              {% csrf_token %}
+              <input type="hidden" name="campaign_id" value="{{ c.pk }}">
+              {% if c.contributions_open %}
+                <button type="submit" name="action" value="close" class="btn btn-warning btn-xs"
+                        onclick="return confirm('Close this campaign?')">Close</button>
+              {% else %}
+                <button type="submit" name="action" value="reopen" class="btn btn-success btn-xs">Reopen</button>
+              {% endif %}
+              {% if not c.funds_disbursed %}
+                <button type="submit" name="action" value="mark_disbursed" class="btn btn-cyan btn-xs"
+                        onclick="return confirm('Mark as disbursed?')">Mark Disbursed</button>
+              {% endif %}
+            </form>
+          </td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="8">
+            <div class="empty-state">
+              <div class="empty-state-icon">📢</div>
+              <div class="empty-state-title">No campaigns found</div>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if total_pages > 1 %}
+  <div class="pagination">
+    {% if current_page > 1 %}<a href="?page={{ current_page|add:"-1" }}&q={{ q }}&campaign_type={{ campaign_type }}" class="page-btn">←</a>{% endif %}
+    {% for p in page_range %}<a href="?page={{ p }}&q={{ q }}&campaign_type={{ campaign_type }}" class="page-btn {% if p == current_page %}active{% endif %}">{{ p }}</a>{% endfor %}
+    {% if current_page < total_pages %}<a href="?page={{ current_page|add:"1" }}&q={{ q }}&campaign_type={{ campaign_type }}" class="page-btn">→</a>{% endif %}
+  </div>
+  {% endif %}
+</div>
+
+<!-- ── Condolence Records (Deceased) ────────────────────── -->
+<div class="panel">
+  <div class="panel-header"><span class="panel-title">🕊️ Condolence Records (Recent 20)</span></div>
+  <div class="table-wrap">
+    <table class="dash-table">
+      <thead>
+        <tr>
+          <th>Deceased</th>
+          <th>Group</th>
+          <th>Total Raised</th>
+          <th>Total Disbursed</th>
+          <th>Status</th>
+          <th>Date</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for d in deceased_records %}
+        <tr>
+          <td class="bold">{{ d.deceased }}</td>
+          <td class="text-muted">{{ d.group.name }}</td>
+          <td class="money">{{ d.raised|floatformat:2 }}</td>
+          <td class="text-muted">R {{ d.disbursed|floatformat:2 }}</td>
+          <td>
+            {% if d.contributions_open %}<span class="badge badge-success">Open</span>{% else %}<span class="badge badge-muted">Closed</span>{% endif %}
+            {% if d.funds_disbursed %}<span class="badge badge-cyan" style="margin-left:4px;">Disbursed</span>{% endif %}
+          </td>
+          <td class="text-small text-muted">{{ d.date }}</td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="6">
+            <div class="empty-state">
+              <div class="empty-state-icon">🕊️</div>
+              <div class="empty-state-title">No condolence records</div>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

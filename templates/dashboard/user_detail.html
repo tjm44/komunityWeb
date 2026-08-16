@@ -1,0 +1,194 @@
+{% extends "dashboard/base.html" %}
+{% block title %}User — {{ target_user }}{% endblock %}
+{% block breadcrumb %}<a href="{% url 'dashboard:users' %}">Users</a> <span style="margin:0 6px;">›</span> {{ target_user }}{% endblock %}
+
+{% block content %}
+<!-- ── Header Row ──────────────────────────────────────── -->
+<div class="page-header">
+  <div class="d-flex align-center gap-3">
+    <div class="admin-avatar" style="width:52px;height:52px;font-size:20px;">
+      {{ profile.first_name|default:target_user.phone|default:"U"|slice:":1"|upper }}
+    </div>
+    <div>
+      <h1 class="page-title">
+        {% if profile.first_name %}{{ profile.first_name }} {{ profile.surname }}{% else %}{{ target_user.phone }}{% endif %}
+      </h1>
+      <p class="page-subtitle">
+        {{ target_user.email|default:"No email" }} · Joined {{ target_user.date_joined|date:"M d, Y" }}
+      </p>
+    </div>
+  </div>
+  <div class="page-actions">
+    <form method="post" style="display:flex;gap:8px;">
+      {% csrf_token %}
+      {% if target_user.is_active %}
+        <button type="submit" name="action" value="deactivate" class="btn btn-danger btn-sm"
+                onclick="return confirm('Deactivate?')">Deactivate</button>
+      {% else %}
+        <button type="submit" name="action" value="activate" class="btn btn-success btn-sm">Activate</button>
+      {% endif %}
+      {% if profile and not profile.is_verified %}
+        <button type="submit" name="action" value="verify" class="btn btn-cyan btn-sm">✓ Verify</button>
+      {% endif %}
+    </form>
+    <a href="{% url 'dashboard:users' %}" class="btn btn-secondary btn-sm">← Back</a>
+  </div>
+</div>
+
+<!-- ── Status Badges ──────────────────────────────────── -->
+<div class="d-flex gap-2 mb-3">
+  {% if target_user.is_active %}<span class="badge badge-success">Active</span>{% else %}<span class="badge badge-danger">Inactive</span>{% endif %}
+  {% if target_user.is_staff %}<span class="badge badge-accent">Staff</span>{% endif %}
+  {% if profile.is_verified %}<span class="badge badge-success">✓ Verified</span>{% else %}<span class="badge badge-muted">Unverified</span>{% endif %}
+  {% if target_user.is_phone_verified %}<span class="badge badge-cyan">Phone Verified</span>{% endif %}
+  {% if profile.is_complete %}<span class="badge badge-info">Profile Complete</span>{% endif %}
+  {% if profile.is_deceased %}<span class="badge badge-warning">Deceased</span>{% endif %}
+</div>
+
+<!-- ── Two-column layout ──────────────────────────────── -->
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;" class="mb-3">
+
+  <!-- Profile Info -->
+  <div class="panel">
+    <div class="panel-header"><span class="panel-title">👤 Profile Details</span></div>
+    <div class="panel-body">
+      <table class="dash-table">
+        <tbody>
+          <tr><td class="text-muted">Full Name</td><td class="bold">{{ profile.full_name|default:"—" }}</td></tr>
+          <tr><td class="text-muted">Date of Birth</td><td>{{ profile.date_of_birth|default:"—" }}</td></tr>
+          <tr><td class="text-muted">Phone</td><td class="mono">{{ profile.phone|default:target_user.phone }}</td></tr>
+          <tr><td class="text-muted">Email</td><td>{{ profile.email|default:target_user.email|default:"—" }}</td></tr>
+          <tr><td class="text-muted">Cultural Background</td><td>{{ profile.cultural_background|default:"—" }}</td></tr>
+          <tr><td class="text-muted">Religious Affiliation</td><td>{{ profile.religious_affiliation|default:"—" }}</td></tr>
+          <tr><td class="text-muted">Created</td><td>{{ profile.created_at|date:"M d, Y H:i"|default:"—" }}</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Wallet -->
+  <div class="panel">
+    <div class="panel-header"><span class="panel-title">💰 Wallet</span></div>
+    <div class="panel-body">
+      {% if wallet %}
+        <div class="kpi-card success" style="margin-bottom:16px;">
+          <div class="kpi-label">Current Balance</div>
+          <div class="kpi-value money">{{ wallet.balance|floatformat:2 }}</div>
+          <div class="kpi-sub mono" style="font-size:11px;margin-top:6px;">{{ wallet.external_wallet_id }}</div>
+        </div>
+        {% if wallet.is_platform_treasury %}
+          <span class="badge badge-warning">🏦 Platform Treasury</span>
+        {% endif %}
+        <p class="text-muted text-small mt-2">Created {{ wallet.created_at|date:"M d, Y" }}</p>
+      {% else %}
+        <div class="empty-state">
+          <div class="empty-state-icon">💸</div>
+          <div class="empty-state-title">No wallet yet</div>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<!-- ── Group Memberships ──────────────────────────────── -->
+<div class="panel mb-3">
+  <div class="panel-header">
+    <span class="panel-title">🏘️ Group Memberships ({{ memberships|length }})</span>
+  </div>
+  <div class="table-wrap">
+    <table class="dash-table">
+      <thead><tr><th>Group</th><th>Purpose</th><th>Role</th><th>Status</th><th>Joined</th></tr></thead>
+      <tbody>
+        {% for m in memberships %}
+        <tr>
+          <td><a href="{% url 'dashboard:group_detail' m.group.pk %}" class="bold">{{ m.group.name }}</a></td>
+          <td><span class="badge badge-muted">{{ m.group.get_purpose_display }}</span></td>
+          <td>{% if m.is_admin %}<span class="badge badge-accent">Admin</span>{% else %}<span class="badge badge-muted">Member</span>{% endif %}</td>
+          <td>{% if m.status == 'active' %}<span class="badge badge-success">Active</span>{% else %}<span class="badge badge-warning">{{ m.status|title }}</span>{% endif %}</td>
+          <td class="text-muted text-small">{{ m.date_joined|date:"M d, Y"|default:"—" }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="5"><div class="empty-state"><div class="empty-state-title">No group memberships</div></div></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ── Recent Transactions ────────────────────────────── -->
+<div class="panel mb-3">
+  <div class="panel-header"><span class="panel-title">💳 Recent Transactions</span></div>
+  <div class="table-wrap">
+    <table class="dash-table">
+      <thead><tr><th>Type</th><th>Amount</th><th>Fee</th><th>Net</th><th>Status</th><th>Date</th></tr></thead>
+      <tbody>
+        {% for tx in transactions %}
+        <tr>
+          <td><span class="badge badge-accent">{{ tx.transaction_type }}</span></td>
+          <td class="money">{{ tx.amount|floatformat:2 }}</td>
+          <td class="text-muted">R {{ tx.fee_amount|floatformat:2 }}</td>
+          <td>R {{ tx.net_amount|floatformat:2 }}</td>
+          <td>
+            {% if tx.status == 'COMPLETED' %}<span class="badge badge-success">Completed</span>
+            {% elif tx.status == 'PENDING' %}<span class="badge badge-warning">Pending</span>
+            {% else %}<span class="badge badge-danger">Failed</span>{% endif %}
+          </td>
+          <td class="text-small text-muted">{{ tx.timestamp|date:"M d, H:i" }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="6"><div class="empty-state"><div class="empty-state-title">No transactions</div></div></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ── Send Notification ──────────────────────────────── -->
+<div class="panel mb-3">
+  <div class="panel-header"><span class="panel-title">📱 Send Push Notification</span></div>
+  <div class="panel-body">
+    <form method="post">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="send_notification">
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Title</label>
+          <input type="text" name="notif_title" class="form-control" placeholder="Notification title" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Message</label>
+          <input type="text" name="notif_message" class="form-control" placeholder="Notification message" required>
+        </div>
+      </div>
+      <button type="submit" class="btn btn-primary btn-sm">Send Notification</button>
+    </form>
+    {% if device_tokens %}
+      <p class="text-muted text-small mt-2">{{ device_tokens|length }} active device token(s)</p>
+    {% else %}
+      <p class="text-muted text-small mt-2">No active device tokens — push may not deliver</p>
+    {% endif %}
+  </div>
+</div>
+
+<!-- ── Recent Notifications ───────────────────────────── -->
+<div class="panel">
+  <div class="panel-header"><span class="panel-title">🔔 Notification History</span></div>
+  <div class="table-wrap">
+    <table class="dash-table">
+      <thead><tr><th>Title</th><th>Type</th><th>Read</th><th>Date</th></tr></thead>
+      <tbody>
+        {% for n in notifications %}
+        <tr>
+          <td class="bold">{{ n.title }}</td>
+          <td><span class="badge badge-muted">{{ n.notification_type|default:"—" }}</span></td>
+          <td>{% if n.is_read %}<span class="badge badge-success">Read</span>{% else %}<span class="badge badge-muted">Unread</span>{% endif %}</td>
+          <td class="text-small text-muted">{{ n.created_at|date:"M d, H:i" }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="4"><div class="empty-state"><div class="empty-state-title">No notifications</div></div></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,136 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Users{% endblock %}
+{% block breadcrumb %}Users{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">User Management</h1>
+    <p class="page-subtitle">{{ total }} registered users · search, filter, and manage accounts</p>
+  </div>
+</div>
+
+<!-- ── Search & Filter ──────────────────────────────────── -->
+<form method="get" class="search-bar">
+  <div class="search-input-wrap">
+    <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+    </svg>
+    <input type="text" name="q" class="form-control" placeholder="Search by phone, email, or name…" value="{{ q }}">
+  </div>
+  <select name="status" class="form-control" style="width:auto;min-width:150px;">
+    <option value="">All Users</option>
+    <option value="active"   {% if status_filter == 'active' %}selected{% endif %}>Active</option>
+    <option value="inactive" {% if status_filter == 'inactive' %}selected{% endif %}>Inactive</option>
+    <option value="verified" {% if status_filter == 'verified' %}selected{% endif %}>Verified</option>
+    <option value="staff"    {% if status_filter == 'staff' %}selected{% endif %}>Staff</option>
+  </select>
+  <button type="submit" class="btn btn-primary btn-sm">Search</button>
+  {% if q or status_filter %}
+    <a href="{% url 'dashboard:users' %}" class="btn btn-secondary btn-sm">Clear</a>
+  {% endif %}
+</form>
+
+<!-- ── Users Table ──────────────────────────────────────── -->
+<div class="panel">
+  <div class="table-wrap">
+    <table class="dash-table">
+      <thead>
+        <tr>
+          <th>User</th>
+          <th>Phone</th>
+          <th>Status</th>
+          <th>Profile</th>
+          <th>Joined</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for user in users %}
+        <tr>
+          <td>
+            <div class="user-cell">
+              <div class="user-avatar-sm">
+                {{ user.profile.first_name|default:user.phone|default:"U"|slice:":1"|upper }}
+              </div>
+              <div>
+                <div class="user-cell-name">
+                  {% if user.profile.first_name %}
+                    {{ user.profile.first_name }} {{ user.profile.surname }}
+                  {% else %}
+                    <span class="text-muted">No name</span>
+                  {% endif %}
+                </div>
+                <div class="user-cell-sub">{{ user.email|default:"—" }}</div>
+              </div>
+            </div>
+          </td>
+          <td class="mono">{{ user.phone|default:"—" }}</td>
+          <td>
+            {% if user.is_active %}
+              <span class="badge badge-success">Active</span>
+            {% else %}
+              <span class="badge badge-danger">Inactive</span>
+            {% endif %}
+            {% if user.is_staff %}<span class="badge badge-accent" style="margin-left:4px;">Staff</span>{% endif %}
+          </td>
+          <td>
+            {% if user.profile.is_verified %}
+              <span class="badge badge-success">✓ Verified</span>
+            {% else %}
+              <span class="badge badge-muted">Unverified</span>
+            {% endif %}
+            {% if user.profile.is_complete %}
+              <span class="badge badge-cyan" style="margin-left:4px;">Complete</span>
+            {% endif %}
+          </td>
+          <td class="text-muted text-small">{{ user.date_joined|date:"M d, Y" }}</td>
+          <td>
+            <div class="d-flex gap-2">
+              <a href="{% url 'dashboard:user_detail' user.pk %}" class="btn btn-secondary btn-xs">View</a>
+              <form method="post" style="display:inline;">
+                {% csrf_token %}
+                <input type="hidden" name="user_id" value="{{ user.pk }}">
+                {% if user.is_active %}
+                  <button type="submit" name="action" value="deactivate" class="btn btn-danger btn-xs"
+                          onclick="return confirm('Deactivate this user?')">Deactivate</button>
+                {% else %}
+                  <button type="submit" name="action" value="activate" class="btn btn-success btn-xs">Activate</button>
+                {% endif %}
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="6">
+            <div class="empty-state">
+              <div class="empty-state-icon">👤</div>
+              <div class="empty-state-title">No users found</div>
+              <div class="empty-state-desc">Try adjusting your search or filter.</div>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Pagination -->
+  {% if total_pages > 1 %}
+  <div class="pagination">
+    {% if current_page > 1 %}
+      <a href="?page={{ current_page|add:"-1" }}&q={{ q }}&status={{ status_filter }}" class="page-btn">←</a>
+    {% endif %}
+    {% for p in page_range %}
+      <a href="?page={{ p }}&q={{ q }}&status={{ status_filter }}"
+         class="page-btn {% if p == current_page %}active{% endif %}">{{ p }}</a>
+    {% endfor %}
+    {% if current_page < total_pages %}
+      <a href="?page={{ current_page|add:"1" }}&q={{ q }}&status={{ status_filter }}" class="page-btn">→</a>
+    {% endif %}
+    <span class="text-muted text-small" style="margin-left:8px;">Page {{ current_page }} of {{ total_pages }}</span>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

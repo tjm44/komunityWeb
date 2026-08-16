@@ -4,7 +4,7 @@ from .views import (
     ProfileViewSet, GroupViewSet, PostViewSet, CommentViewSet, 
     DeceasedViewSet, ContributionViewSet, WalletViewSet, PostImageViewSet,
     TransactionViewSet, UserViewSet, ReplyViewSet, GroupMembershipViewSet,
-    DeviceTokenViewSet, password_reset_request, search_api_view,
+    DeviceTokenViewSet, NotificationViewSet, password_reset_request, search_api_view,
     EmailAuthTokenView, mobile_callback_view,
     FundCampaignViewSet, OrganisationViewSet,
     RequestOTPView, VerifyOTPView, CheckPhoneStatusView,
@@ -26,6 +26,7 @@ router.register(r'wallets', WalletViewSet, basename='wallet')
 router.register(r'transactions', TransactionViewSet, basename='transactions')
 router.register(r'users', UserViewSet, basename='users')
 router.register(r'device-tokens', DeviceTokenViewSet)
+router.register(r'notifications', NotificationViewSet, basename='notifications')
 router.register(r'campaigns', FundCampaignViewSet, basename='campaigns')
 
 urlpatterns = [

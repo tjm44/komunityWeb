@@ -1,0 +1,219 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Vendors & Insurance{% endblock %}
+{% block breadcrumb %}Vendors & Insurance{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Vendors & Insurance</h1>
+    <p class="page-subtitle">Service vendor registry, bookings, and micro-insurance policies</p>
+  </div>
+</div>
+
+<!-- ── Booking Revenue KPI ──────────────────────────────── -->
+<div class="kpi-grid mb-3">
+  <div class="kpi-card success">
+    <div class="kpi-label">Commission Revenue</div>
+    <div class="kpi-value money">{{ total_booking_revenue|floatformat:2 }}</div>
+    <div class="kpi-sub">From completed bookings</div>
+    <div class="kpi-icon">🏪</div>
+  </div>
+  <div class="kpi-card accent">
+    <div class="kpi-label">Registered Vendors</div>
+    <div class="kpi-value">{{ vendors|length }}</div>
+    <div class="kpi-sub">Service providers</div>
+    <div class="kpi-icon">🏬</div>
+  </div>
+  <div class="kpi-card cyan">
+    <div class="kpi-label">Insurance Policies</div>
+    <div class="kpi-value">{{ policies|length }}</div>
+    <div class="kpi-sub">Available products</div>
+    <div class="kpi-icon">🛡️</div>
+  </div>
+</div>
+
+<div style="display:grid;grid-template-columns:2fr 1fr;gap:16px;" class="mb-3">
+
+  <!-- ── Vendor List ──────────────────────────────────── -->
+  <div class="panel">
+    <div class="panel-header"><span class="panel-title">🏪 Service Vendors</span></div>
+    <div class="table-wrap">
+      <table class="dash-table">
+        <thead><tr><th>Name</th><th>Category</th><th>Rating</th><th>Verified</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody>
+          {% for v in vendors %}
+          <tr>
+            <td>
+              <div class="user-cell-name">{{ v.name }}</div>
+              <div class="user-cell-sub">{{ v.contact_phone }} · {{ v.contact_email|default:"—" }}</div>
+            </td>
+            <td><span class="badge badge-accent">{{ v.get_category_display }}</span></td>
+            <td>⭐ {{ v.rating }}</td>
+            <td>{% if v.is_verified %}<span class="badge badge-success">✓ Verified</span>{% else %}<span class="badge badge-muted">Pending</span>{% endif %}</td>
+            <td>{% if v.is_active %}<span class="badge badge-success">Active</span>{% else %}<span class="badge badge-danger">Inactive</span>{% endif %}</td>
+            <td>
+              <form method="post" style="display:flex;gap:5px;">
+                {% csrf_token %}
+                <input type="hidden" name="vendor_id" value="{{ v.pk }}">
+                {% if not v.is_verified %}
+                  <button type="submit" name="action" value="verify_vendor" class="btn btn-cyan btn-xs">Verify</button>
+                {% endif %}
+                <button type="submit" name="action" value="toggle_vendor" class="btn btn-secondary btn-xs">
+                  {% if v.is_active %}Disable{% else %}Enable{% endif %}
+                </button>
+              </form>
+            </td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="6"><div class="empty-state"><div class="empty-state-icon">🏪</div><div class="empty-state-title">No vendors yet</div></div></td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ── Add Vendor ───────────────────────────────────── -->
+  <div class="panel">
+    <div class="panel-header"><span class="panel-title">➕ Add Service Vendor</span></div>
+    <div class="panel-body">
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="create_vendor">
+        <div class="form-group">
+          <label class="form-label">Vendor Name</label>
+          <input type="text" name="name" class="form-control" placeholder="e.g. Dignity Funeral Parlor" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Category</label>
+          <select name="category" class="form-control" required>
+            <option value="">— Select category —</option>
+            {% for val, label in category_choices %}
+              <option value="{{ val }}">{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Contact Phone</label>
+          <input type="text" name="contact_phone" class="form-control" placeholder="+27..." required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Contact Email</label>
+          <input type="email" name="contact_email" class="form-control" placeholder="vendor@email.com">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Description</label>
+          <textarea name="description" class="form-control" rows="2" placeholder="Short description…"></textarea>
+        </div>
+        <button type="submit" class="btn btn-primary btn-sm">Add Vendor</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- ── Recent Bookings ───────────────────────────────────── -->
+<div class="panel mb-3">
+  <div class="panel-header"><span class="panel-title">📅 Recent Vendor Bookings</span></div>
+  <div class="table-wrap">
+    <table class="dash-table">
+      <thead><tr><th>Vendor</th><th>User</th><th>Group</th><th>Service</th><th>Amount</th><th>Commission</th><th>Status</th><th>Date</th></tr></thead>
+      <tbody>
+        {% for b in bookings %}
+        <tr>
+          <td class="bold">{{ b.vendor.name }}</td>
+          <td class="text-small">{{ b.user.phone }}</td>
+          <td class="text-small text-muted">{{ b.group.name|default:"—" }}</td>
+          <td class="text-small">{{ b.service_description|truncatechars:30 }}</td>
+          <td class="money">{{ b.booking_amount|floatformat:2 }}</td>
+          <td class="text-success text-small">R {{ b.commission_amount|floatformat:2 }}</td>
+          <td>
+            {% if b.status == 'COMPLETED' %}<span class="badge badge-success">Completed</span>
+            {% elif b.status == 'CONFIRMED' %}<span class="badge badge-cyan">Confirmed</span>
+            {% elif b.status == 'PENDING' %}<span class="badge badge-warning">Pending</span>
+            {% else %}<span class="badge badge-danger">Cancelled</span>{% endif %}
+          </td>
+          <td class="text-small text-muted">{{ b.created_at|date:"M d, Y" }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="8"><div class="empty-state"><div class="empty-state-title">No bookings yet</div></div></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ── Insurance Policies ───────────────────────────────── -->
+<div style="display:grid;grid-template-columns:2fr 1fr;gap:16px;">
+  <div class="panel">
+    <div class="panel-header"><span class="panel-title">🛡️ Micro-Insurance Policies</span></div>
+    <div class="table-wrap">
+      <table class="dash-table">
+        <thead><tr><th>Policy</th><th>Provider</th><th>Cover</th><th>Premium/mo</th><th>Status</th></tr></thead>
+        <tbody>
+          {% for p in policies %}
+          <tr>
+            <td class="bold">{{ p.policy_name }}</td>
+            <td class="text-muted">{{ p.provider_name }}</td>
+            <td>R {{ p.cover_amount|floatformat:2 }}</td>
+            <td class="money">{{ p.monthly_premium|floatformat:2 }}</td>
+            <td>{% if p.is_active %}<span class="badge badge-success">Active</span>{% else %}<span class="badge badge-muted">Inactive</span>{% endif %}</td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="5"><div class="empty-state"><div class="empty-state-title">No policies yet</div></div></td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ── Add Policy ───────────────────────────────────── -->
+  <div class="panel">
+    <div class="panel-header"><span class="panel-title">➕ Add Insurance Policy</span></div>
+    <div class="panel-body">
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="create_policy">
+        <div class="form-group">
+          <label class="form-label">Provider Name</label>
+          <input type="text" name="provider_name" class="form-control" placeholder="e.g. Hollard" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Policy Name</label>
+          <input type="text" name="policy_name" class="form-control" placeholder="e.g. Family Cover Basic" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Cover Amount (R)</label>
+          <input type="number" step="0.01" name="cover_amount" class="form-control" placeholder="e.g. 10000" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Monthly Premium (R)</label>
+          <input type="number" step="0.01" name="monthly_premium" class="form-control" placeholder="e.g. 49.99" required>
+        </div>
+        <button type="submit" class="btn btn-primary btn-sm">Create Policy</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- ── Insurance Enrollments ────────────────────────────── -->
+{% if enrollments %}
+<div class="panel mt-3">
+  <div class="panel-header"><span class="panel-title">📋 Recent Enrollments ({{ enrollments|length }})</span></div>
+  <div class="table-wrap">
+    <table class="dash-table">
+      <thead><tr><th>Group</th><th>Policy</th><th>Members</th><th>Status</th><th>Enrolled</th></tr></thead>
+      <tbody>
+        {% for e in enrollments %}
+        <tr>
+          <td><a href="{% url 'dashboard:group_detail' e.group.pk %}">{{ e.group.name }}</a></td>
+          <td class="text-muted">{{ e.policy.policy_name }}</td>
+          <td>{{ e.enrolled_members_count }}</td>
+          <td>{% if e.is_active %}<span class="badge badge-success">Active</span>{% else %}<span class="badge badge-muted">Inactive</span>{% endif %}</td>
+          <td class="text-small text-muted">{{ e.created_at|date:"M d, Y" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,197 @@
+{% extends "dashboard/base.html" %}
+{% block title %}{{ group.name }}{% endblock %}
+{% block breadcrumb %}<a href="{% url 'dashboard:groups' %}">Groups</a> <span style="margin:0 6px;">›</span> {{ group.name }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="d-flex align-center gap-3">
+    <div class="admin-avatar" style="width:52px;height:52px;font-size:22px;background:linear-gradient(135deg,#06b6d4,#7c3aed);">
+      {{ group.name|default:"G"|slice:":1"|upper }}
+    </div>
+    <div>
+      <h1 class="page-title">{{ group.name }}</h1>
+      <p class="page-subtitle">{{ group.get_purpose_display }} · Created {{ group.created_at|date:"M d, Y"|default:"—" }}</p>
+    </div>
+  </div>
+  <div class="page-actions">
+    <a href="{% url 'dashboard:groups' %}" class="btn btn-secondary btn-sm">← Back</a>
+  </div>
+</div>
+
+<!-- ── KPI strip ────────────────────────────────────────── -->
+<div class="stat-strip mb-3">
+  <div class="stat-strip-item">
+    <div class="stat-strip-value text-success">R {{ wallet_balance|floatformat:2 }}</div>
+    <div class="stat-strip-label">Wallet Balance</div>
+  </div>
+  <div class="stat-strip-item">
+    <div class="stat-strip-value">{{ memberships|length }}</div>
+    <div class="stat-strip-label">Members</div>
+  </div>
+  <div class="stat-strip-item">
+    <div class="stat-strip-value">{{ campaigns|length }}</div>
+    <div class="stat-strip-label">Campaigns</div>
+  </div>
+  <div class="stat-strip-item">
+    <div class="stat-strip-value {% if transfer_requests|length %}text-warning{% endif %}">
+      {{ transfer_requests|length }}
+    </div>
+    <div class="stat-strip-label">Transfer Requests</div>
+  </div>
+  {% if sms_balance %}
+  <div class="stat-strip-item">
+    <div class="stat-strip-value">{{ sms_balance.balance }}</div>
+    <div class="stat-strip-label">SMS Credits</div>
+  </div>
+  {% endif %}
+</div>
+
+<!-- ── Info + Subscription ──────────────────────────────── -->
+<div style="display:grid;grid-template-columns:2fr 1fr;gap:16px;" class="mb-3">
+  <div class="panel">
+    <div class="panel-header"><span class="panel-title">ℹ️ Group Info</span></div>
+    <div class="panel-body">
+      <table class="dash-table">
+        <tbody>
+          <tr><td class="text-muted">Description</td><td>{{ group.description|default:"—" }}</td></tr>
+          <tr><td class="text-muted">Status</td><td>
+            {% if group.is_active %}<span class="badge badge-success">Active</span>{% else %}<span class="badge badge-danger">Inactive</span>{% endif %}
+          </td></tr>
+          <tr><td class="text-muted">Purpose</td><td><span class="badge badge-accent">{{ group.get_purpose_display }}</span></td></tr>
+          <tr><td class="text-muted">Max Members</td><td>{{ group.max_members|default:"Unlimited" }}</td></tr>
+          <tr><td class="text-muted">Requires Approval</td><td>{% if group.requires_approval %}Yes{% else %}No{% endif %}</td></tr>
+          <tr><td class="text-muted">Min Approvals</td><td>{{ group.min_disbursement_approvals }}</td></tr>
+          <tr><td class="text-muted">Verified Members Only</td><td>{% if group.verified_members_only %}Yes{% else %}No{% endif %}</td></tr>
+          <tr><td class="text-muted">Wallet ID</td><td class="mono text-small">{{ group.external_wallet_id|default:"—" }}</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header"><span class="panel-title">🎫 Subscription</span></div>
+    <div class="panel-body">
+      {% if subscription %}
+        <div class="kpi-card {% if subscription.tier == 'PRO' %}accent{% elif subscription.tier == 'ENTERPRISE' %}cyan{% else %}muted{% endif %}" style="margin-bottom:14px;">
+          <div class="kpi-label">Tier</div>
+          <div class="kpi-value" style="font-size:20px;">{{ subscription.get_tier_display }}</div>
+          <div class="kpi-sub">R {{ subscription.monthly_price|floatformat:2 }}/month</div>
+        </div>
+        <p class="text-small text-muted">
+          {% if subscription.is_active %}<span class="badge badge-success">Active</span>{% else %}<span class="badge badge-danger">Inactive</span>{% endif %}
+          {% if subscription.expires_at %}· Expires {{ subscription.expires_at|date:"M d, Y" }}{% endif %}
+        </p>
+      {% else %}
+        <div class="empty-state">
+          <div class="empty-state-icon">🆓</div>
+          <div class="empty-state-title">Free Tier</div>
+          <div class="empty-state-desc">No subscription</div>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<!-- ── Members ──────────────────────────────────────────── -->
+<div class="panel mb-3">
+  <div class="panel-header"><span class="panel-title">👥 Members ({{ memberships|length }})</span></div>
+  <div class="table-wrap">
+    <table class="dash-table">
+      <thead><tr><th>Member</th><th>Role</th><th>Status</th><th>Joined</th></tr></thead>
+      <tbody>
+        {% for m in memberships %}
+        <tr>
+          <td>
+            <div class="user-cell">
+              <div class="user-avatar-sm">{{ m.member.first_name|default:m.member.surname|default:"M"|slice:":1"|upper }}</div>
+              <div>
+                <div class="user-cell-name">{{ m.member.full_name }}</div>
+                <div class="user-cell-sub">{{ m.member.user.phone }}</div>
+              </div>
+            </div>
+          </td>
+          <td>{% if m.is_admin %}<span class="badge badge-accent">Admin</span>{% else %}<span class="badge badge-muted">Member</span>{% endif %}</td>
+          <td>{% if m.status == 'active' %}<span class="badge badge-success">Active</span>{% else %}<span class="badge badge-warning">{{ m.status|title }}</span>{% endif %}</td>
+          <td class="text-small text-muted">{{ m.date_joined|date:"M d, Y"|default:"—" }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="4"><div class="empty-state"><div class="empty-state-title">No members</div></div></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ── Transfer Requests ────────────────────────────────── -->
+<div class="panel mb-3">
+  <div class="panel-header"><span class="panel-title">💸 Transfer Requests</span></div>
+  <div class="table-wrap">
+    <table class="dash-table">
+      <thead><tr><th>Recipient</th><th>Amount</th><th>Status</th><th>Approvals</th><th>Date</th></tr></thead>
+      <tbody>
+        {% for tr in transfer_requests %}
+        <tr>
+          <td class="bold">{{ tr.recipient_profile.full_name }}</td>
+          <td class="money">{{ tr.amount|floatformat:2 }}</td>
+          <td>
+            {% if tr.status == 'EXECUTED' %}<span class="badge badge-success">Executed</span>
+            {% elif tr.status == 'PENDING' %}<span class="badge badge-warning">Pending</span>
+            {% else %}<span class="badge badge-danger">Rejected</span>{% endif %}
+          </td>
+          <td>{{ tr.approvals.count }} / {{ tr.required_approvals }}</td>
+          <td class="text-small text-muted">{{ tr.created_at|date:"M d, H:i" }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="5"><div class="empty-state"><div class="empty-state-title">No transfer requests</div></div></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ── Recent Transactions ──────────────────────────────── -->
+<div class="panel mb-3">
+  <div class="panel-header"><span class="panel-title">💳 Recent Transactions</span></div>
+  <div class="table-wrap">
+    <table class="dash-table">
+      <thead><tr><th>Type</th><th>Amount</th><th>Status</th><th>Note</th><th>Date</th></tr></thead>
+      <tbody>
+        {% for tx in recent_transactions %}
+        <tr>
+          <td><span class="badge badge-accent">{{ tx.transaction_type }}</span></td>
+          <td class="money">{{ tx.amount|floatformat:2 }}</td>
+          <td>{% if tx.status == 'COMPLETED' %}<span class="badge badge-success">Done</span>{% elif tx.status == 'PENDING' %}<span class="badge badge-warning">Pending</span>{% else %}<span class="badge badge-danger">Failed</span>{% endif %}</td>
+          <td class="text-muted text-small">{{ tx.note|default:"—"|truncatechars:40 }}</td>
+          <td class="text-small text-muted">{{ tx.timestamp|date:"M d, H:i" }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="5"><div class="empty-state"><div class="empty-state-title">No transactions</div></div></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ── Campaigns ────────────────────────────────────────── -->
+<div class="panel">
+  <div class="panel-header"><span class="panel-title">📢 Campaigns ({{ campaigns|length }})</span></div>
+  <div class="table-wrap">
+    <table class="dash-table">
+      <thead><tr><th>Title</th><th>Type</th><th>Open</th><th>Disbursed</th><th>Created</th></tr></thead>
+      <tbody>
+        {% for c in campaigns %}
+        <tr>
+          <td class="bold">{{ c.title }}</td>
+          <td><span class="badge badge-accent">{{ c.campaign_type }}</span></td>
+          <td>{% if c.contributions_open %}<span class="badge badge-success">Open</span>{% else %}<span class="badge badge-muted">Closed</span>{% endif %}</td>
+          <td>{% if c.funds_disbursed %}<span class="badge badge-success">Yes</span>{% else %}<span class="badge badge-muted">No</span>{% endif %}</td>
+          <td class="text-small text-muted">{{ c.created_at|date:"M d, Y" }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="5"><div class="empty-state"><div class="empty-state-title">No campaigns</div></div></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

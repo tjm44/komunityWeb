@@ -1,15 +1,21 @@
+import logging
 try:
-    from exponent_server_sdk import PushClient, PushMessage
+    from exponent_server_sdk import (
+        PushClient, PushMessage, DeviceNotRegisteredError,
+        PushServerError, PushTicketError
+    )
 except ImportError:
-    PushClient = None
-    PushMessage = None
+    PushClient = PushMessage = DeviceNotRegisteredError = PushServerError = PushTicketError = None
     print("Warning: exponent_server_sdk not found or failed to import. Push notifications will be disabled.")
 from django.conf import settings
 from .models import DeviceToken, Notification
 
+logger = logging.getLogger(__name__)
+
 def send_push_notification(user, title, message, data=None, notification_type=None):
     """
     Send push notification to a user's devices and store it in DB.
+    Deactivates device tokens if Expo returns DeviceNotRegistered.
     """
     if data is None:
         data = {}
@@ -24,26 +30,33 @@ def send_push_notification(user, title, message, data=None, notification_type=No
     )
 
     # Get active tokens
-    tokens = DeviceToken.objects.filter(user=user, is_active=True).values_list('token', flat=True)
+    tokens = list(DeviceToken.objects.filter(user=user, is_active=True).values_list('token', flat=True))
     
     if not tokens:
         return
 
     if not PushClient:
-        print("PushClient not available. Skipping notification.")
+        logger.info("PushClient not available. Skipping notification.")
         return
 
     try:
-        response = PushClient().publish_multiple([
-            PushMessage(to=token,
-                        title=title,
-                        body=message,
-                        data=data)
+        messages = [
+            PushMessage(to=token, title=title, body=message, data=data)
             for token in tokens
-        ])
+        ]
+        responses = PushClient().publish_multiple(messages)
+
+        for token, response_ticket in zip(tokens, responses):
+            try:
+                response_ticket.validate_response()
+            except Exception as exc:
+                exc_str = str(exc)
+                if (DeviceNotRegisteredError and isinstance(exc, DeviceNotRegisteredError)) or "DeviceNotRegistered" in exc_str:
+                    logger.info(f"Deactivating unregistered device token: {token}")
+                    DeviceToken.objects.filter(token=token).update(is_active=False)
+                else:
+                    logger.warning(f"Push notification ticket error for token {token}: {exc}")
+
     except Exception as exc:
-        # Check if "exc" has message
-        print(f"Error sending push notification: {exc}")
-        
-        # Here we could handle invalid tokens (DeviceNotRegistered)
-        # But for now basic try/except is okay.
+        logger.error(f"Error sending push notification batch: {exc}")
+

@@ -2237,8 +2237,8 @@ def password_reset_request(request):
     # Always return success to avoid revealing which emails exist
     return Response({'detail': 'If an account with that email exists, a password reset link has been sent.'})
 
-from user.models import DeviceToken
-from user.serializers import DeviceTokenSerializer
+from user.models import DeviceToken, Notification
+from user.serializers import DeviceTokenSerializer, NotificationSerializer
 
 class DeviceTokenViewSet(viewsets.ModelViewSet):
     queryset = DeviceToken.objects.all()
@@ -2272,6 +2272,31 @@ class DeviceTokenViewSet(viewsets.ModelViewSet):
         )
         
         return Response({'status': 'registered', 'created': created})
+
+class NotificationViewSet(viewsets.ModelViewSet):
+    serializer_class = NotificationSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return Notification.objects.filter(recipient=self.request.user).order_by('-created_at')
+
+    @action(detail=True, methods=['post'])
+    def mark_read(self, request, pk=None):
+        notification = self.get_object()
+        notification.is_read = True
+        notification.save()
+        return Response({'status': 'marked as read', 'id': notification.id})
+
+    @action(detail=False, methods=['post'])
+    def mark_all_read(self, request):
+        updated_count = Notification.objects.filter(recipient=request.user, is_read=False).update(is_read=True)
+        return Response({'status': 'all marked as read', 'count': updated_count})
+
+    @action(detail=False, methods=['get'])
+    def unread_count(self, request):
+        count = Notification.objects.filter(recipient=request.user, is_read=False).count()
+        return Response({'unread_count': count})
+
 
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])

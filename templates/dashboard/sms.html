@@ -1,0 +1,194 @@
+{% extends "dashboard/base.html" %}
+{% block title %}SMS & Notifications{% endblock %}
+{% block breadcrumb %}SMS & Notifications{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">SMS & Notifications</h1>
+    <p class="page-subtitle">Manage SMS credit packages, group balances, and broadcast messages</p>
+  </div>
+</div>
+
+<!-- ── KPI strip ────────────────────────────────────────── -->
+<div class="kpi-grid mb-3">
+  <div class="kpi-card accent">
+    <div class="kpi-label">Total Credits Sold</div>
+    <div class="kpi-value">{{ total_credits_sold }}</div>
+    <div class="kpi-sub">Across all packages</div>
+    <div class="kpi-icon">📨</div>
+  </div>
+  <div class="kpi-card success">
+    <div class="kpi-label">SMS Revenue</div>
+    <div class="kpi-value money">{{ total_sms_revenue|floatformat:2 }}</div>
+    <div class="kpi-sub">All-time package sales</div>
+    <div class="kpi-icon">💵</div>
+  </div>
+  <div class="kpi-card cyan">
+    <div class="kpi-label">Active Packages</div>
+    <div class="kpi-value">{{ packages|length }}</div>
+    <div class="kpi-sub">Credit bundles available</div>
+    <div class="kpi-icon">📦</div>
+  </div>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;" class="mb-3">
+
+  <!-- ── SMS Packages ──────────────────────────────────── -->
+  <div class="panel">
+    <div class="panel-header"><span class="panel-title">📦 SMS Credit Packages</span></div>
+    <div class="table-wrap">
+      <table class="dash-table">
+        <thead><tr><th>Name</th><th>Credits</th><th>Price</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody>
+          {% for pkg in packages %}
+          <tr>
+            <td class="bold">{{ pkg.name }}</td>
+            <td>{{ pkg.credits_count }}</td>
+            <td class="money">{{ pkg.price|floatformat:2 }}</td>
+            <td>{% if pkg.is_active %}<span class="badge badge-success">Active</span>{% else %}<span class="badge badge-muted">Inactive</span>{% endif %}</td>
+            <td>
+              <form method="post" style="display:flex;gap:5px;">
+                {% csrf_token %}
+                <input type="hidden" name="package_id" value="{{ pkg.pk }}">
+                <button type="submit" name="action" value="toggle_package" class="btn btn-secondary btn-xs">
+                  {% if pkg.is_active %}Disable{% else %}Enable{% endif %}
+                </button>
+                <button type="submit" name="action" value="delete_package" class="btn btn-danger btn-xs"
+                        onclick="return confirm('Delete this package?')">Delete</button>
+              </form>
+            </td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="5"><div class="empty-state"><div class="empty-state-title">No packages yet</div></div></td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ── Create New Package ────────────────────────────── -->
+  <div class="panel">
+    <div class="panel-header"><span class="panel-title">➕ Create SMS Package</span></div>
+    <div class="panel-body">
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="create_package">
+        <div class="form-group">
+          <label class="form-label">Package Name</label>
+          <input type="text" name="name" class="form-control" placeholder="e.g. Starter Pack" required>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Credits Count</label>
+            <input type="number" name="credits_count" class="form-control" placeholder="e.g. 50" min="1" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Price (ZAR)</label>
+            <input type="number" step="0.01" name="price" class="form-control" placeholder="e.g. 99.00" min="0" required>
+          </div>
+        </div>
+        <button type="submit" class="btn btn-primary btn-sm">Create Package</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- ── Group SMS Credit Balances ──────────────────────── -->
+<div class="panel mb-3">
+  <div class="panel-header"><span class="panel-title">📊 Group SMS Credit Balances (Top 30)</span></div>
+  <div class="table-wrap">
+    <table class="dash-table">
+      <thead><tr><th>Group</th><th>SMS Credits</th><th>Last Updated</th></tr></thead>
+      <tbody>
+        {% for b in balances %}
+        <tr>
+          <td><a href="{% url 'dashboard:group_detail' b.group.pk %}" class="bold">{{ b.group.name }}</a></td>
+          <td>
+            {% if b.balance > 10 %}<span class="badge badge-success">{{ b.balance }}</span>
+            {% elif b.balance > 0 %}<span class="badge badge-warning">{{ b.balance }}</span>
+            {% else %}<span class="badge badge-danger">{{ b.balance }}</span>{% endif %}
+          </td>
+          <td class="text-small text-muted">{{ b.updated_at|date:"M d, Y H:i" }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="3"><div class="empty-state"><div class="empty-state-title">No balances yet</div></div></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ── Recent Purchases ──────────────────────────────────── -->
+<div class="panel mb-3">
+  <div class="panel-header"><span class="panel-title">🧾 Recent SMS Purchases</span></div>
+  <div class="table-wrap">
+    <table class="dash-table">
+      <thead><tr><th>Group</th><th>Package</th><th>Credits</th><th>Amount Paid</th><th>Purchased By</th><th>Date</th></tr></thead>
+      <tbody>
+        {% for p in purchases %}
+        <tr>
+          <td><a href="{% url 'dashboard:group_detail' p.group.pk %}">{{ p.group.name }}</a></td>
+          <td class="text-muted">{{ p.package.name|default:"—" }}</td>
+          <td>{{ p.credits_added }}</td>
+          <td class="money">{{ p.amount_paid|floatformat:2 }}</td>
+          <td class="text-small">{{ p.purchased_by.phone|default:"—" }}</td>
+          <td class="text-small text-muted">{{ p.created_at|date:"M d, Y" }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="6"><div class="empty-state"><div class="empty-state-title">No purchases yet</div></div></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ── Broadcast Notification ────────────────────────────── -->
+<div class="panel">
+  <div class="panel-header"><span class="panel-title">📣 Broadcast Push Notification</span></div>
+  <div class="panel-body">
+    <form method="post">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="broadcast_notification">
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Title</label>
+          <input type="text" name="broadcast_title" class="form-control" placeholder="Notification title" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Target</label>
+          <select name="target" class="form-control" id="broadcastTarget" onchange="toggleGroupSelect(this)">
+            <option value="all">All Active Users</option>
+            <option value="group">Specific Group</option>
+          </select>
+        </div>
+        <div class="form-group" id="groupSelectWrap" style="display:none;">
+          <label class="form-label">Group</label>
+          <select name="group_id" class="form-control">
+            <option value="">— select group —</option>
+            {% for g in groups_all %}
+              <option value="{{ g.pk }}">{{ g.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Message</label>
+        <textarea name="broadcast_message" class="form-control" rows="3" placeholder="Enter your notification message…" required></textarea>
+      </div>
+      <button type="submit" class="btn btn-primary"
+              onclick="return confirm('Send broadcast to all selected users?')">
+        📣 Send Broadcast
+      </button>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function toggleGroupSelect(sel) {
+  document.getElementById('groupSelectWrap').style.display = sel.value === 'group' ? 'block' : 'none';
+}
+</script>
+{% endblock %}

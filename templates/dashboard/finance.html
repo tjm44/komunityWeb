@@ -1,0 +1,230 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Finance{% endblock %}
+{% block breadcrumb %}Finance{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Finance & Wallet</h1>
+    <p class="page-subtitle">Treasury, transactions, fee ledger, and pending disbursements</p>
+  </div>
+</div>
+
+<!-- ── Treasury KPIs ────────────────────────────────────── -->
+<div class="kpi-grid mb-3">
+  <div class="kpi-card treasury">
+    <div class="kpi-label">Treasury Balance</div>
+    <div class="kpi-value money">{{ treasury_balance|floatformat:2 }}</div>
+    <div class="kpi-sub">All collected platform fees</div>
+    <div class="kpi-icon">🏦</div>
+  </div>
+  <div class="kpi-card success">
+    <div class="kpi-label">All-Time Revenue</div>
+    <div class="kpi-value money">{{ total_revenue|floatformat:2 }}</div>
+    <div class="kpi-sub">Total fee income since launch</div>
+    <div class="kpi-icon">📈</div>
+  </div>
+  <div class="kpi-card warning">
+    <div class="kpi-label">Pending Transfers</div>
+    <div class="kpi-value">{{ pending_transfers|length }}</div>
+    <div class="kpi-sub">Awaiting execution or rejection</div>
+    <div class="kpi-icon">⏳</div>
+  </div>
+  <div class="kpi-card info">
+    <div class="kpi-label">Filtered Transactions</div>
+    <div class="kpi-value">{{ total_tx }}</div>
+    <div class="kpi-sub">Matching current filters</div>
+    <div class="kpi-icon">💳</div>
+  </div>
+</div>
+
+<!-- ── Revenue by Fee Type ──────────────────────────────── -->
+{% if revenue_by_type %}
+<div class="panel mb-3">
+  <div class="panel-header"><span class="panel-title">💵 Revenue Breakdown by Fee Type</span></div>
+  <div class="table-wrap">
+    <table class="dash-table">
+      <thead><tr><th>Fee Type</th><th>Transactions</th><th>Total Revenue</th></tr></thead>
+      <tbody>
+        {% for row in revenue_by_type %}
+        <tr>
+          <td><span class="badge badge-accent">{{ row.fee_type }}</span></td>
+          <td>{{ row.count }}</td>
+          <td class="money">{{ row.total|floatformat:2 }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+<!-- ── Pending Transfer Requests ────────────────────────── -->
+{% if pending_transfers %}
+<div class="panel mb-3">
+  <div class="panel-header">
+    <span class="panel-title">⚠️ Pending Group Transfer Requests</span>
+    <span class="badge badge-warning">{{ pending_transfers|length }} pending</span>
+  </div>
+  <div class="table-wrap">
+    <table class="dash-table">
+      <thead><tr><th>Group</th><th>Recipient</th><th>Amount</th><th>Approvals</th><th>Requested</th><th>Actions</th></tr></thead>
+      <tbody>
+        {% for tr in pending_transfers %}
+        <tr>
+          <td class="bold">{{ tr.group.name }}</td>
+          <td>{{ tr.recipient_profile.full_name }}</td>
+          <td class="money">{{ tr.amount|floatformat:2 }}</td>
+          <td>{{ tr.approvals.count }} / {{ tr.required_approvals }}</td>
+          <td class="text-small text-muted">{{ tr.created_at|date:"M d, H:i" }}</td>
+          <td>
+            <form method="post" style="display:flex;gap:6px;">
+              {% csrf_token %}
+              <input type="hidden" name="transfer_id" value="{{ tr.pk }}">
+              <button type="submit" name="action" value="execute" class="btn btn-success btn-xs"
+                      onclick="return confirm('Execute this transfer?')">Execute</button>
+              <button type="submit" name="action" value="reject" class="btn btn-danger btn-xs"
+                      onclick="return confirm('Reject this transfer?')">Reject</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+<!-- ── Transaction Filter ───────────────────────────────── -->
+<div class="panel mb-3">
+  <div class="panel-header"><span class="panel-title">🔍 Filter Transactions</span></div>
+  <div class="panel-body">
+    <form method="get">
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Transaction Type</label>
+          <select name="tx_type" class="form-control">
+            <option value="">All Types</option>
+            {% for val, label in tx_type_choices %}
+              <option value="{{ val }}" {% if tx_type == val %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Status</label>
+          <select name="tx_status" class="form-control">
+            <option value="">All Statuses</option>
+            {% for val, label in tx_status_choices %}
+              <option value="{{ val }}" {% if tx_status == val %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">From Date</label>
+          <input type="date" name="date_from" class="form-control" value="{{ date_from }}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">To Date</label>
+          <input type="date" name="date_to" class="form-control" value="{{ date_to }}">
+        </div>
+        <div class="form-group" style="display:flex;align-items:flex-end;gap:8px;">
+          <button type="submit" class="btn btn-primary btn-sm">Filter</button>
+          <a href="{% url 'dashboard:finance' %}" class="btn btn-secondary btn-sm">Clear</a>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ── Transactions Table ───────────────────────────────── -->
+<div class="panel mb-3">
+  <div class="panel-header">
+    <span class="panel-title">💳 Transactions ({{ total_tx }})</span>
+  </div>
+  <div class="table-wrap">
+    <table class="dash-table">
+      <thead>
+        <tr>
+          <th>User</th>
+          <th>Type</th>
+          <th>Amount</th>
+          <th>Fee</th>
+          <th>Net</th>
+          <th>Status</th>
+          <th>Group</th>
+          <th>Date</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for tx in transactions %}
+        <tr>
+          <td>
+            <div class="user-cell">
+              <div class="user-avatar-sm" style="width:24px;height:24px;font-size:10px;">
+                {{ tx.wallet.user.phone|default:"U"|slice:":1"|upper }}
+              </div>
+              <a href="{% url 'dashboard:user_detail' tx.wallet.user.pk %}" class="text-small">
+                {% if tx.wallet.is_platform_treasury %}🏦 Treasury
+                {% elif tx.wallet.user.profile.first_name %}{{ tx.wallet.user.profile.first_name }}
+                {% else %}{{ tx.wallet.user.phone }}{% endif %}
+              </a>
+            </div>
+          </td>
+          <td><span class="badge badge-accent">{{ tx.transaction_type }}</span></td>
+          <td class="money">{{ tx.amount|floatformat:2 }}</td>
+          <td class="text-muted text-small">R {{ tx.fee_amount|floatformat:2 }}</td>
+          <td class="text-small">R {{ tx.net_amount|floatformat:2 }}</td>
+          <td>
+            {% if tx.status == 'COMPLETED' %}<span class="badge badge-success">Done</span>
+            {% elif tx.status == 'PENDING' %}<span class="badge badge-warning">Pending</span>
+            {% else %}<span class="badge badge-danger">Failed</span>{% endif %}
+          </td>
+          <td class="text-small text-muted">{{ tx.destination_group.name|default:"—"|truncatechars:20 }}</td>
+          <td class="text-small text-muted nowrap">{{ tx.timestamp|date:"M d, H:i" }}</td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="8">
+            <div class="empty-state">
+              <div class="empty-state-icon">💳</div>
+              <div class="empty-state-title">No transactions found</div>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if total_pages > 1 %}
+  <div class="pagination">
+    {% if current_page > 1 %}<a href="?page={{ current_page|add:"-1" }}&tx_type={{ tx_type }}&tx_status={{ tx_status }}&date_from={{ date_from }}&date_to={{ date_to }}" class="page-btn">←</a>{% endif %}
+    {% for p in page_range %}<a href="?page={{ p }}&tx_type={{ tx_type }}&tx_status={{ tx_status }}&date_from={{ date_from }}&date_to={{ date_to }}" class="page-btn {% if p == current_page %}active{% endif %}">{{ p }}</a>{% endfor %}
+    {% if current_page < total_pages %}<a href="?page={{ current_page|add:"1" }}&tx_type={{ tx_type }}&tx_status={{ tx_status }}&date_from={{ date_from }}&date_to={{ date_to }}" class="page-btn">→</a>{% endif %}
+  </div>
+  {% endif %}
+</div>
+
+<!-- ── Fee Ledger ───────────────────────────────────────── -->
+<div class="panel">
+  <div class="panel-header"><span class="panel-title">🧾 Platform Fee Ledger (Recent 20)</span></div>
+  <div class="table-wrap">
+    <table class="dash-table">
+      <thead><tr><th>Fee Type</th><th>Gross Amount</th><th>Fee Earned</th><th>Net to User</th><th>Date</th></tr></thead>
+      <tbody>
+        {% for fl in fee_ledger %}
+        <tr>
+          <td><span class="badge badge-success">{{ fl.fee_type }}</span></td>
+          <td>R {{ fl.gross_amount|floatformat:2 }}</td>
+          <td class="money">{{ fl.fee_amount|floatformat:2 }}</td>
+          <td class="text-muted">R {{ fl.net_amount|floatformat:2 }}</td>
+          <td class="text-small text-muted">{{ fl.created_at|date:"M d, H:i" }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="5"><div class="empty-state"><div class="empty-state-title">No fee records yet</div></div></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
