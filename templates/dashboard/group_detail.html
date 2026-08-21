@@ -65,6 +65,75 @@
           <tr><td class="text-muted">Wallet ID</td><td class="mono text-small">{{ group.external_wallet_id|default:"—" }}</td></tr>
         </tbody>
       </table>
+
+      {% if group.purpose == 'bereavement' and group.bereavement_profile %}
+      <div style="margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.08);">
+        <h4 style="font-size:14px;color:#a78bfa;margin-bottom:8px;">🕊️ Bereavement Profile</h4>
+        <table class="dash-table text-small">
+          <tbody>
+            <tr><td class="text-muted">Beneficiary Name</td><td>{{ group.bereavement_profile.beneficiary_name|default:"—" }}</td></tr>
+            <tr><td class="text-muted">Beneficiary Phone</td><td>{{ group.bereavement_profile.beneficiary_phone|default:"—" }}</td></tr>
+            <tr><td class="text-muted">Allow Dependents</td><td>{% if group.bereavement_profile.allow_dependents %}Yes (Max {{ group.bereavement_profile.max_dependents }}){% else %}No{% endif %}</td></tr>
+            <tr><td class="text-muted">Contribution Model</td><td>{{ group.bereavement_profile.get_contribution_schedule_display }}</td></tr>
+            <tr><td class="text-muted">Fixed Contribution</td><td>R {{ group.bereavement_profile.fixed_contribution_amount }}</td></tr>
+            <tr><td class="text-muted">Fixed Claim Payout</td><td>R {{ group.bereavement_profile.fixed_claim_payout }}</td></tr>
+          </tbody>
+        </table>
+      </div>
+      {% elif group.purpose == 'church' and group.church_profile %}
+      <div style="margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.08);">
+        <h4 style="font-size:14px;color:#38bdf8;margin-bottom:8px;">⛪ Church Profile</h4>
+        <table class="dash-table text-small">
+          <tbody>
+            <tr><td class="text-muted">Denomination</td><td>{{ group.church_profile.denomination|default:"—" }}</td></tr>
+            <tr><td class="text-muted">Branch / Parish</td><td>{{ group.church_profile.branch_parish_name|default:"—" }}</td></tr>
+            <tr><td class="text-muted">Default Tithe</td><td>R {{ group.church_profile.default_tithe_amount|default:"0.00" }}</td></tr>
+            <tr><td class="text-muted">Faith Pledges</td><td>{% if group.church_profile.enable_faith_pledges %}Enabled{% else %}Disabled{% endif %}</td></tr>
+            <tr><td class="text-muted">Tax Receipts (Sec 18A)</td><td>{% if group.church_profile.enable_tax_receipts %}Enabled{% else %}Disabled{% endif %}</td></tr>
+          </tbody>
+        </table>
+      </div>
+      {% elif group.purpose == 'stokvel' and group.stokvel_profile %}
+      <div style="margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.08);">
+        <h4 style="font-size:14px;color:#34d399;margin-bottom:8px;">💰 Stokvel Profile</h4>
+        <table class="dash-table text-small">
+          <tbody>
+            <tr><td class="text-muted">Stokvel Category</td><td>{{ group.stokvel_profile.get_stokvel_type_display }}</td></tr>
+            <tr><td class="text-muted">Cycle Frequency</td><td>{{ group.stokvel_profile.get_cycle_frequency_display }}</td></tr>
+            <tr><td class="text-muted">Cycle Contribution</td><td>R {{ group.stokvel_profile.contribution_amount }}</td></tr>
+            <tr><td class="text-muted">Rotation Sequence</td><td>{{ group.stokvel_profile.get_payout_rotation_mode_display }}</td></tr>
+            <tr><td class="text-muted">Late Penalty Fee</td><td>R {{ group.stokvel_profile.penalty_late_fee }}</td></tr>
+            <tr><td class="text-muted">Borrowing Allowed</td><td>{% if group.stokvel_profile.borrowing_allowed %}Yes{% else %}No{% endif %}</td></tr>
+          </tbody>
+        </table>
+      </div>
+      {% elif group.purpose == 'student' and group.student_profile %}
+      <div style="margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.08);">
+        <h4 style="font-size:14px;color:#fbbf24;margin-bottom:8px;">🎓 Student Body Profile</h4>
+        <table class="dash-table text-small">
+          <tbody>
+            <tr><td class="text-muted">Institution</td><td>{{ group.student_profile.institution_name|default:"—" }}</td></tr>
+            <tr><td class="text-muted">Campus</td><td>{{ group.student_profile.campus_name|default:"—" }}</td></tr>
+            <tr><td class="text-muted">Society Type</td><td>{{ group.student_profile.get_student_body_type_display }}</td></tr>
+            <tr><td class="text-muted">Student ID Required</td><td>{% if group.student_profile.student_id_required %}Yes{% else %}No{% endif %}</td></tr>
+            <tr><td class="text-muted">Membership Fee</td><td>R {{ group.student_profile.membership_fee }} ({{ group.student_profile.get_membership_fee_period_display }})</td></tr>
+          </tbody>
+        </table>
+      </div>
+      {% elif group.purpose == 'sports' and group.sports_profile %}
+      <div style="margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.08);">
+        <h4 style="font-size:14px;color:#34d399;margin-bottom:8px;">⚽ Sports Club Profile</h4>
+        <table class="dash-table text-small">
+          <tbody>
+            <tr><td class="text-muted">Sport Category</td><td>{{ group.sports_profile.get_sport_category_display }}</td></tr>
+            <tr><td class="text-muted">Club Level</td><td>{{ group.sports_profile.get_club_level_display }}</td></tr>
+            <tr><td class="text-muted">Membership Fee</td><td>R {{ group.sports_profile.membership_fee }} ({{ group.sports_profile.get_dues_frequency_display }})</td></tr>
+            <tr><td class="text-muted">Match Fee</td><td>R {{ group.sports_profile.match_fee_per_game }} / game</td></tr>
+            <tr><td class="text-muted">Kit & Equipment Fund</td><td>{% if group.sports_profile.kit_equipment_fund_enabled %}Enabled{% else %}Disabled{% endif %}</td></tr>
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
     </div>
   </div>
 

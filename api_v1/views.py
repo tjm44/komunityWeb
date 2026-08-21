@@ -636,18 +636,79 @@ class GroupViewSet(viewsets.ModelViewSet):
 
         status_val = 'pending' if group.requires_approval else 'active'
         is_active_val = (status_val == 'active')
+        
+        join_msg = request.data.get('join_message', '')
+        b_name = request.data.get('beneficiary_name')
+        b_rel = request.data.get('beneficiary_relationship')
+        b_phone = request.data.get('beneficiary_phone')
+        deps_list = request.data.get('dependents', [])
+
+        v_make_model = request.data.get('vehicle_make_model')
+        v_reg = request.data.get('vehicle_registration')
+        v_insurer = request.data.get('insurer_name')
+        v_policy = request.data.get('policy_number')
+        v_vin = request.data.get('vin_number')
+        v_license = request.data.get('driver_license_number')
+
         membership, created = GroupMembership.objects.get_or_create(
             group=group,
             member=profile,
             defaults={
                 'status': status_val,
-                'is_active': is_active_val
+                'is_active': is_active_val,
+                'join_message': join_msg,
+                'beneficiary_name': b_name,
+                'beneficiary_relationship': b_rel,
+                'beneficiary_phone': b_phone,
+                'vehicle_make_model': v_make_model,
+                'vehicle_registration': v_reg,
+                'insurer_name': v_insurer,
+                'policy_number': v_policy,
+                'vin_number': v_vin,
+                'driver_license_number': v_license,
             }
         )
         if not created:
             membership.status = status_val
             membership.is_active = is_active_val
+            if join_msg:
+                membership.join_message = join_msg
+            if b_name:
+                membership.beneficiary_name = b_name
+            if b_rel:
+                membership.beneficiary_relationship = b_rel
+            if b_phone:
+                membership.beneficiary_phone = b_phone
+            if v_make_model:
+                membership.vehicle_make_model = v_make_model
+            if v_reg:
+                membership.vehicle_registration = v_reg
+            if v_insurer:
+                membership.insurer_name = v_insurer
+            if v_policy:
+                membership.policy_number = v_policy
+            if v_vin:
+                membership.vin_number = v_vin
+            if v_license:
+                membership.driver_license_number = v_license
             membership.save()
+
+        # Handle dependents creation for bereavement groups
+        if group.purpose == 'bereavement' and isinstance(deps_list, list):
+            from chema.models import Dependent
+            for dep in deps_list:
+                if isinstance(dep, dict) and dep.get('name'):
+                    dob = dep.get('date_of_birth') or dep.get('dob') or '2000-01-01'
+                    Dependent.objects.get_or_create(
+                        guardian=profile,
+                        group=group,
+                        name=dep.get('name'),
+                        defaults={
+                            'relationship': dep.get('relationship', 'Dependent'),
+                            'date_of_birth': dob
+                        }
+                    )
+
         if is_active_val:
             # Deactivate others for this user to keep only one active
             GroupMembership.objects.filter(member=profile).exclude(group=group).update(is_active=False)
@@ -857,8 +918,16 @@ class GroupViewSet(viewsets.ModelViewSet):
 
         transfer_request.status = GroupWalletTransferRequest.STATUS_REJECTED
         transfer_request.save()
-
         serializer = GroupWalletTransferRequestSerializer(transfer_request, context={'request': request})
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['get'])
+    def campaigns(self, request, pk=None):
+        group = self.get_object()
+        from condolence.models import FundCampaign
+        from condolence.serializers import FundCampaignSerializer
+        campaigns = FundCampaign.objects.filter(group=group).order_by('-created_at')
+        serializer = FundCampaignSerializer(campaigns, many=True, context={'request': request})
         return Response(serializer.data)
 
 

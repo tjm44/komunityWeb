@@ -15,6 +15,10 @@ class Group(models.Model):
         ('excess', 'Insurance Excess Fund'),
         ('emergency', 'Emergency / Disaster Fundraiser'),
         ('custom', 'Custom Fund'),
+        ('church', 'Church / Religious Group'),
+        ('stokvel', 'Stokvel & Rotating Savings'),
+        ('student', 'Student Body & Society'),
+        ('sports', 'Sports Club & Team'),
     ]
 
     name = models.CharField(max_length=100)
@@ -279,6 +283,16 @@ class GroupMembership(models.Model):
     can_post    = models.BooleanField(default=True)
     can_comment = models.BooleanField(default=True)
     join_message = models.TextField(blank=True, help_text="Message when requesting to join")
+    beneficiary_name = models.CharField(max_length=150, blank=True, null=True)
+    beneficiary_relationship = models.CharField(max_length=100, blank=True, null=True)
+    beneficiary_phone = models.CharField(max_length=30, blank=True, null=True)
+    # Insurance Excess / Vehicle Verification Fields (Fraud Prevention)
+    vehicle_make_model = models.CharField(max_length=150, blank=True, null=True, help_text="e.g. 2022 Toyota Hilux 2.8 GD-6")
+    vehicle_registration = models.CharField(max_length=50, blank=True, null=True, help_text="e.g. CA 987-654")
+    insurer_name = models.CharField(max_length=100, blank=True, null=True, help_text="e.g. Santam / OUTsurance")
+    policy_number = models.CharField(max_length=100, blank=True, null=True)
+    vin_number = models.CharField(max_length=100, blank=True, null=True, help_text="Vehicle Identification / Chassis Number")
+    driver_license_number = models.CharField(max_length=100, blank=True, null=True, help_text="Driver / Owner ID Number")
     last_viewed_at = models.DateTimeField(null=True, blank=True)
     
     def __str__(self):
@@ -415,3 +429,194 @@ def ensure_creator_is_admin(sender, instance, created, **kwargs):
         needs_save = True
     if needs_save:
         membership.save()
+
+
+class GroupBereavementProfile(models.Model):
+    CONTRIBUTION_SCHEDULE_CHOICES = [
+        ('monthly', 'Monthly Contribution'),
+        ('event_driven', 'Per Bereavement Event'),
+        ('annual', 'Annual Contribution'),
+    ]
+
+    group = models.OneToOneField(Group, on_delete=models.CASCADE, related_name='bereavement_profile')
+    beneficiary_name = models.CharField(max_length=150, null=True, blank=True)
+    beneficiary_relationship = models.CharField(max_length=100, null=True, blank=True)
+    beneficiary_phone = models.CharField(max_length=30, null=True, blank=True)
+    beneficiary_payout_details = models.TextField(null=True, blank=True, help_text="Bank details or mobile money account for payouts")
+    
+    allow_dependents = models.BooleanField(default=True)
+    max_dependents = models.PositiveIntegerField(default=5, help_text="Maximum allowed dependents per member")
+    allowed_dependent_types = models.CharField(max_length=255, default="Spouse, Child, Parent, Sibling, In-Law", help_text="Comma separated allowed relationships")
+    
+    contribution_schedule = models.CharField(max_length=20, choices=CONTRIBUTION_SCHEDULE_CHOICES, default='event_driven')
+    fixed_contribution_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    fixed_claim_payout = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Bereavement Profile - {self.group.name}"
+
+
+class GroupChurchProfile(models.Model):
+    group = models.OneToOneField(Group, on_delete=models.CASCADE, related_name='church_profile')
+    denomination = models.CharField(max_length=100, null=True, blank=True)
+    branch_parish_name = models.CharField(max_length=150, null=True, blank=True)
+    
+    enable_faith_pledges = models.BooleanField(default=True)
+    enable_tax_receipts = models.BooleanField(default=False)
+    enable_bulletin_announcements = models.BooleanField(default=True)
+    default_tithe_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Church Profile - {self.group.name}"
+
+
+class GroupStokvelProfile(models.Model):
+    STOKVEL_TYPE_CHOICES = [
+        ('rotational_payout', 'Rotational Payout (ROSCA / Mahodisana)'),
+        ('savings_and_investment', 'Savings & Investment'),
+        ('grocery', 'Grocery & Festive Payout'),
+        ('burial', 'Burial Stokvel'),
+    ]
+    CYCLE_FREQUENCY_CHOICES = [
+        ('weekly', 'Weekly'),
+        ('biweekly', 'Bi-weekly'),
+        ('monthly', 'Monthly'),
+        ('annual', 'Annual'),
+    ]
+    ROTATION_MODE_CHOICES = [
+        ('fixed_sequence', 'Fixed Sequence'),
+        ('random_draw', 'Random Draw'),
+        ('bidding', 'Bidding / Auction'),
+        ('request_on_need', 'Request on Need'),
+    ]
+
+    group = models.OneToOneField(Group, on_delete=models.CASCADE, related_name='stokvel_profile')
+    stokvel_type = models.CharField(max_length=30, choices=STOKVEL_TYPE_CHOICES, default='rotational_payout')
+    cycle_frequency = models.CharField(max_length=20, choices=CYCLE_FREQUENCY_CHOICES, default='monthly')
+    contribution_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    
+    payout_rotation_mode = models.CharField(max_length=20, choices=ROTATION_MODE_CHOICES, default='fixed_sequence')
+    penalty_late_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    borrowing_allowed = models.BooleanField(default=False)
+    payout_target_month = models.CharField(max_length=20, null=True, blank=True, help_text="e.g. December for grocery stokvels")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Stokvel Profile - {self.group.name}"
+
+
+class GroupStudentProfile(models.Model):
+    STUDENT_BODY_TYPE_CHOICES = [
+        ('residence_committee', 'Residence Committee'),
+        ('faculty_society', 'Faculty & Academic Society'),
+        ('student_representative_council', 'Student Representative Council'),
+        ('sports_res', 'Residence Sports Club'),
+        ('study_group', 'Study & Mutual Aid Group'),
+    ]
+    FEE_PERIOD_CHOICES = [
+        ('per_semester', 'Per Semester'),
+        ('annual', 'Annual'),
+        ('once_off', 'Once-off'),
+    ]
+
+    group = models.OneToOneField(Group, on_delete=models.CASCADE, related_name='student_profile')
+    institution_name = models.CharField(max_length=150, null=True, blank=True)
+    campus_name = models.CharField(max_length=100, null=True, blank=True)
+    student_body_type = models.CharField(max_length=35, choices=STUDENT_BODY_TYPE_CHOICES, default='faculty_society')
+    
+    student_id_required = models.BooleanField(default=True, help_text="Require member student registration number")
+    membership_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    membership_fee_period = models.CharField(max_length=20, choices=FEE_PERIOD_CHOICES, default='annual')
+    
+    enable_event_ticketing = models.BooleanField(default=True)
+    enable_emergency_relief_fund = models.BooleanField(default=False)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Student Profile - {self.group.name}"
+
+
+class GroupSportsProfile(models.Model):
+    SPORT_CATEGORY_CHOICES = [
+        ('soccer', 'Soccer / Football'),
+        ('rugby', 'Rugby'),
+        ('netball', 'Netball'),
+        ('running_athletics', 'Running & Athletics'),
+        ('cricket', 'Cricket'),
+        ('basketball', 'Basketball'),
+        ('swimming', 'Swimming'),
+        ('golf', 'Golf'),
+        ('other', 'Other Sport'),
+    ]
+    CLUB_LEVEL_CHOICES = [
+        ('social_recreational', 'Social & Recreational'),
+        ('amateur_league', 'Amateur League'),
+        ('university_league', 'University League'),
+        ('youth_academy', 'Youth Academy'),
+        ('semi_professional', 'Semi-Professional'),
+    ]
+    DUES_FREQUENCY_CHOICES = [
+        ('monthly', 'Monthly'),
+        ('per_season', 'Per Season'),
+        ('annual', 'Annual'),
+    ]
+
+    group = models.OneToOneField(Group, on_delete=models.CASCADE, related_name='sports_profile')
+    sport_category = models.CharField(max_length=30, choices=SPORT_CATEGORY_CHOICES, default='soccer')
+    club_level = models.CharField(max_length=30, choices=CLUB_LEVEL_CHOICES, default='social_recreational')
+    
+    membership_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    dues_frequency = models.CharField(max_length=20, choices=DUES_FREQUENCY_CHOICES, default='monthly')
+    match_fee_per_game = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    
+    kit_equipment_fund_enabled = models.BooleanField(default=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Sports Profile - {self.group.name}"
+
+
+class GroupExcessProfile(models.Model):
+    group = models.OneToOneField(Group, on_delete=models.CASCADE, related_name='excess_profile')
+    max_excess_payout = models.DecimalField(max_digits=10, decimal_places=2, default=5000.00)
+    require_vin_verification = models.BooleanField(default=True, help_text="Require vehicle VIN/chassis number to prevent fraud")
+    require_policy_proof = models.BooleanField(default=True, help_text="Require valid insurance policy number")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Excess Profile - {self.group.name}"
+
+
+@receiver(post_save, sender=Group)
+def ensure_group_profile(sender, instance, created, **kwargs):
+    """
+    Ensure the matching profile object exists for the group based on its purpose.
+    """
+    if instance.purpose == 'bereavement':
+        GroupBereavementProfile.objects.get_or_create(group=instance)
+    elif instance.purpose == 'excess':
+        GroupExcessProfile.objects.get_or_create(group=instance)
+    elif instance.purpose == 'church':
+        GroupChurchProfile.objects.get_or_create(group=instance)
+    elif instance.purpose == 'stokvel':
+        GroupStokvelProfile.objects.get_or_create(group=instance)
+    elif instance.purpose == 'student':
+        GroupStudentProfile.objects.get_or_create(group=instance)
+    elif instance.purpose == 'sports':
+        GroupSportsProfile.objects.get_or_create(group=instance)
+
+

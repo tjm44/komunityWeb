@@ -1,0 +1,177 @@
+# Implementation Plan - Expanding Group Types & Group-Specific Fields
+
+We are expanding the community group types in Komunity from the current 3-4 options (`bereavement`, `excess`, `emergency`, `custom`) to include 4 new dedicated group types:
+1. **Churches & Religious Groups** (`church`)
+2. **Stokvels & Savings Clubs** (`stokvel`)
+3. **Student Bodies & Societies** (`student`)
+4. **Sports Clubs & Teams** (`sports`)
+
+To make each group type deeply functional and relevant, we are introducing **group-type specific configuration fields and features** across the backend models, REST API, web frontend, and mobile apps.
+
+---
+
+## User Review Required
+
+> [!IMPORTANT]
+> **Data Model Design Choice**
+> We propose introducing dedicated extension models linked to `Group` via `OneToOneField` (e.g. `GroupBereavementProfile`, `GroupChurchProfile`, `GroupStokvelProfile`, `GroupStudentProfile`, `GroupSportsProfile`). This keeps the core `Group` table clean while allowing type-specific validation, database constraints, and custom Django Admin forms.
+
+> [!TIP]
+> **Church Multiple Campaigns**
+> For Church groups, we will enable church administrators to manage multiple simultaneous fund campaigns (e.g. Monthly Tithes, Building Fund, Missions, Special Offerings) linked directly to the church group wallet with campaign-level tracking and recurring contribution options.
+
+---
+
+## Group-Specific Fields Specification
+
+### 1. Bereavement Fund (`bereavement`)
+- **Beneficiary Details**:
+  - Default primary beneficiary for group payouts (`beneficiary_name`, `beneficiary_relationship`, `beneficiary_phone`, `beneficiary_payout_details`).
+- **Dependents Management**:
+  - `allow_dependents`: `Boolean` (default `True`).
+  - `max_dependents`: `PositiveIntegerField` (e.g., maximum 5 or 10 dependents allowed per member).
+  - `allowed_dependent_types`: Choice list (e.g., Spouse, Children, Parents, In-Laws).
+- **Contribution Model**:
+  - `contribution_schedule`: Choice (`'monthly'` vs `'event_driven'` [contribution triggered when a member passes away] vs `'annual'`).
+  - `fixed_contribution_amount`: `DecimalField` (expected contribution per cycle or event).
+  - `fixed_claim_payout`: `DecimalField` (guaranteed benefit amount per claim).
+
+### 2. Churches & Religious Groups (`church`)
+- **Church Identity**:
+  - `denomination`: `CharField` (e.g., Pentecostal, Methodist, Catholic, Anglican, Independent, Non-Denominational).
+  - `branch_parish_name`: `CharField`.
+- **Multiple Concurrent Campaigns**:
+  - Support for creating and running multiple simultaneous campaigns under one Church group:
+    - **Tithes & Offerings** (Recurring Monthly / Weekly).
+    - **Building & Maintenance Fund** (Once-off or milestone goal).
+    - **Missions & Community Outreach** (Targeted campaign).
+    - **Special Event / Festival Appeals** (Easter, Christmas, Harvest).
+- **Church Features**:
+  - `enable_faith_pledges`: `Boolean` (members commit to monthly/annual giving targets).
+  - `enable_tax_receipts`: `Boolean` (Section 18A tax-deductible receipt readiness).
+  - `enable_bulletin_announcements`: `Boolean` (church noticeboard broadcasting).
+
+### 3. Stokvels & Savings Clubs (`stokvel`)
+- **Stokvel Model**:
+  - `stokvel_type`: Choice (`'rotational_payout'` [Mahodisana / ROSCA], `'savings_and_investment'`, `'grocery'`, `'burial'`).
+  - `cycle_frequency`: Choice (`'weekly'`, `'biweekly'`, `'monthly'`, `'annual'`).
+  - `contribution_amount`: `DecimalField` (per member per cycle).
+- **Payout & Rotation Rules**:
+  - `payout_rotation_mode`: Choice (`'fixed_sequence'`, `'random_draw'`, `'bidding'`, `'request_on_need'`).
+  - `penalty_late_fee`: `DecimalField` (flat fee or percentage for late payments).
+  - `borrowing_allowed`: `Boolean` (allow internal loans from pooled funds with interest).
+  - `payout_target_month`: Choice (e.g., December payout for annual grocery/savings stokvels).
+
+### 4. Student Bodies & Societies (`student`)
+- **Academic Context**:
+  - `institution_name`: `CharField` (e.g., UCT, Wits, UP, TVET College).
+  - `campus_name`: `CharField`.
+  - `student_body_type`: Choice (`'residence_committee'`, `'faculty_society'`, `'student_representative_council'`, `'sports_res'`, `'study_group'`).
+  - `student_id_required`: `Boolean` (requires members to input their valid student number when joining).
+- **Fees & Operations**:
+  - `membership_fee`: `DecimalField`.
+  - `membership_fee_period`: Choice (`'per_semester'`, `'annual'`, `'once_off'`).
+  - `enable_event_ticketing`: `Boolean` (event ticket contributions for trips, socials, orientation).
+  - `enable_emergency_relief_fund`: `Boolean` (peer fund for meal or textbook assistance).
+
+### 5. Sports Clubs & Teams (`sports`)
+- **Sports Category & Level**:
+  - `sport_category`: Choice (`'soccer'`, `'rugby'`, `'netball'`, `'running_athletics'`, `'cricket'`, `'basketball'`, `'swimming'`, `'golf'`, `'other'`).
+  - `club_level`: Choice (`'social_recreational'`, `'amateur_league'`, `'university_league'`, `'youth_academy'`, `'semi_professional'`).
+- **Financial Dues & Team Funds**:
+  - `membership_fee`: `DecimalField`.
+  - `dues_frequency`: Choice (`'monthly'`, `'per_season'`, `'annual'`).
+  - `match_fee_per_game`: `DecimalField` (optional per-game referee/field fee).
+  - `kit_equipment_fund_enabled`: `Boolean` (dedicated fundraising for team uniform/gear).
+
+---
+
+## Proposed Changes
+
+### Backend (`komunitybackend`)
+
+#### [MODIFY] [models.py](file:///c:/Users/tjman/Desktop/Komunity/komunitybackend/chema/models.py)
+- Expand `GROUP_PURPOSE_CHOICES` in `Group` model:
+  ```python
+  GROUP_PURPOSE_CHOICES = [
+      ('bereavement', 'Bereavement Fund'),
+      ('excess', 'Insurance Excess Fund'),
+      ('emergency', 'Emergency / Disaster Fundraiser'),
+      ('custom', 'Custom Fund'),
+      ('church', 'Church / Religious Group'),
+      ('stokvel', 'Stokvel & Rotating Savings'),
+      ('student', 'Student Body & Society'),
+      ('sports', 'Sports Club & Team'),
+  ]
+  ```
+- Create concrete setting models:
+  - `GroupBereavementProfile` (`Group` OneToOne)
+  - `GroupChurchProfile` (`Group` OneToOne)
+  - `GroupStokvelProfile` (`Group` OneToOne)
+  - `GroupStudentProfile` (`Group` OneToOne)
+  - `GroupSportsProfile` (`Group` OneToOne)
+- Add Django signals to auto-create/update profile records based on `group.purpose`.
+
+#### [MODIFY] [serializers.py](file:///c:/Users/tjman/Desktop/Komunity/komunitybackend/chema/serializers.py)
+- Create serializers for each profile model:
+  - `GroupBereavementProfileSerializer`
+  - `GroupChurchProfileSerializer`
+  - `GroupStokvelProfileSerializer`
+  - `GroupStudentProfileSerializer`
+  - `GroupSportsProfileSerializer`
+- Embed the active profile in `GroupSerializer` based on `group.purpose`.
+- Allow updating profile settings during group creation and group setting updates.
+
+#### [NEW] [migrations/0020_expand_group_types_and_profiles.py](file:///c:/Users/tjman/Desktop/Komunity/komunitybackend/chema/migrations/0020_expand_group_types_and_profiles.py)
+- Create Django database migration for the new group purpose choices and settings profile tables.
+
+#### [MODIFY] [admin.py](file:///c:/Users/tjman/Desktop/Komunity/komunitybackend/chema/admin.py)
+- Register profile inline models inside `GroupAdmin` for seamless administration.
+
+---
+
+### Web Frontend (`komunityfrontend`)
+
+#### [MODIFY] [manage/page.tsx](file:///c:/Users/tjman/Desktop/Komunity/komunityfrontend/app/dashboard/groups/%5Bid%5D/manage/page.tsx)
+- Update Group Settings tab to render dynamic, type-specific settings sections according to `group.purpose`.
+- Add interactive controls for Church campaigns, Stokvel rotation rules, Student verification toggles, Sports dues, and Bereavement dependent policies.
+
+#### [MODIFY] [groups/page.tsx](file:///c:/Users/tjman/Desktop/Komunity/komunityfrontend/app/dashboard/groups/page.tsx)
+- Update creation wizard and purpose filters to support all 8 group types with rich icons, category badges, and tailored setup forms.
+
+---
+
+### Mobile App (`KomunityMobile`)
+
+#### [MODIFY] [GroupPurposeScreen.tsx](file:///c:/Users/tjman/Desktop/Komunity/KomunityMobile/src/screens/GroupPurposeScreen.tsx)
+- Update `GroupPurpose` type and `PURPOSE_OPTIONS` array to include Church (⛪), Stokvel (💰), Student Body (🎓), and Sports Club (⚽).
+
+#### [MODIFY] [CreateGroupScreen.tsx](file:///c:/Users/tjman/Desktop/Komunity/KomunityMobile/src/screens/CreateGroupScreen.tsx)
+- Add Step 2 / Dynamic Form fields for group-type specific settings (e.g. dependents count for Bereavement, church denomination & campaign preferences, stokvel contribution & rotation options, student institution name & ID check, sports category).
+
+#### [MODIFY] [GroupManagementScreen.tsx](file:///c:/Users/tjman/Desktop/Komunity/KomunityMobile/src/screens/GroupManagementScreen.tsx)
+- Render group-type specific settings tab and control toggles.
+
+---
+
+## Verification Plan
+
+### Automated Tests
+- Run Django system check and backend tests:
+  ```powershell
+  python manage.py check
+  python manage.py test chema.tests
+  ```
+- Build check on Next.js frontend:
+  ```powershell
+  npm run build --prefix komunityfrontend
+  ```
+- TypeScript check on Mobile app:
+  ```powershell
+  npx tsc --noEmit --project KomunityMobile/tsconfig.json
+  ```
+
+### Manual Verification
+1. **Group Creation Flow**: Create a group for each of the new types (`church`, `stokvel`, `student`, `sports`, `bereavement`) on both Web and Mobile.
+2. **Type-Specific Fields Validation**: Verify that specific fields (e.g., max dependents, church campaigns, stokvel rotation, student ID enforcement, sport category) save and display correctly on group management and group detail screens.
+3. **Church Campaigns**: Test launching multiple campaigns (Monthly Tithe vs Once-off Building Fund) under a single Church group.

@@ -7,10 +7,10 @@
 
 /* ── CSS Variables ─────────────────────────────────────────── */
 :root {
-  --bg:          #080b12;
-  --bg-2:        #0d1117;
-  --surface:     #111827;
-  --surface-2:   #1a2235;
+  --bg:          #474b57;
+  --bg-2:        #39414e;
+  --surface:     #1d2422;
+  --surface-2:   #2e3b38;
   --panel:       rgba(255, 255, 255, 0.04);
   --panel-hover: rgba(255, 255, 255, 0.07);
   --border:      rgba(255, 255, 255, 0.08);
@@ -34,8 +34,8 @@
 
   --text-primary:  #f1f5f9;
   --text-secondary:#94a3b8;
-  --text-muted:    #475569;
-  --text-dim:      #334155;
+  --text-muted:    #ebc2ebe1;
+  --text-dim:      #58b5da;
 
   --sidebar-w:     240px;
   --topbar-h:      64px;

@@ -1,5 +1,8 @@
 from django.contrib import admin
-from .models import Group, Organisation, GroupMembership, Post, PostImage, Comment, Reply, Dependent
+from .models import (
+    Group, Organisation, GroupMembership, Post, PostImage, Comment, Reply, Dependent,
+    GroupBereavementProfile, GroupChurchProfile, GroupStokvelProfile, GroupStudentProfile, GroupSportsProfile
+)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -12,6 +15,36 @@ class GroupMembershipInline(admin.TabularInline):
     fields = ('member', 'role', 'status', 'is_admin', 'is_active', 'date_joined')
     readonly_fields = ('date_joined',)
     raw_id_fields = ('member',)
+
+
+class GroupBereavementProfileInline(admin.StackedInline):
+    model = GroupBereavementProfile
+    extra = 0
+    can_delete = False
+
+
+class GroupChurchProfileInline(admin.StackedInline):
+    model = GroupChurchProfile
+    extra = 0
+    can_delete = False
+
+
+class GroupStokvelProfileInline(admin.StackedInline):
+    model = GroupStokvelProfile
+    extra = 0
+    can_delete = False
+
+
+class GroupStudentProfileInline(admin.StackedInline):
+    model = GroupStudentProfile
+    extra = 0
+    can_delete = False
+
+
+class GroupSportsProfileInline(admin.StackedInline):
+    model = GroupSportsProfile
+    extra = 0
+    can_delete = False
 
 
 class PostImageInline(admin.TabularInline):
@@ -31,7 +64,14 @@ class GroupAdmin(admin.ModelAdmin):
     list_filter = ('purpose', 'is_active', 'requires_approval', 'verified_members_only', 'created_at')
     readonly_fields = ('created_at', 'updated_at')
     raw_id_fields = ('admin', 'creator')
-    inlines = [GroupMembershipInline]
+    inlines = [
+        GroupMembershipInline,
+        GroupBereavementProfileInline,
+        GroupChurchProfileInline,
+        GroupStokvelProfileInline,
+        GroupStudentProfileInline,
+        GroupSportsProfileInline,
+    ]
     fieldsets = (
         ('Basic Info', {
             'fields': ('name', 'description', 'cover_image', 'is_active')
